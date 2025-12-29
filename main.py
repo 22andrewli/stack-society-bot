@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 import asyncpg
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,6 +17,35 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Database connection pool (will be initialized in on_ready)
 db_pool = None
+
+# Initialize VADER sentiment analyzer
+sentiment_analyzer = SentimentIntensityAnalyzer()
+
+
+def analyze_sentiment(text: str) -> str:
+    """
+    Analyze the sentiment of a text string.
+    
+    Args:
+        text: The text to analyze
+        
+    Returns:
+        "Positive", "Negative", or "Neutral" based on VADER compound score
+    """
+    try:
+        scores = sentiment_analyzer.polarity_scores(text)
+        compound = scores['compound']
+        
+        # Thresholds for sentiment classification
+        if compound >= 0.05:
+            return "Positive"
+        elif compound <= -0.05:
+            return "Negative"
+        else:
+            return "Neutral"
+    except Exception as e:
+        print(f"Error analyzing sentiment: {e}")
+        return "Neutral"  # Default to neutral on error
 
 
 @bot.event
@@ -169,10 +199,29 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
             await interaction.response.send_message(f"📭 No reviews found for {target_user.mention}.", ephemeral=True)
             return
         
+        # Analyze sentiment for all reviews
+        sentiment_counts = {"Positive": 0, "Negative": 0, "Neutral": 0}
+        for review in rows:
+            try:
+                sentiment = analyze_sentiment(review['text'])
+                sentiment_counts[sentiment] += 1
+            except Exception as e:
+                print(f"Error analyzing sentiment for review {review['id']}: {e}")
+                sentiment_counts["Neutral"] += 1  # Default to neutral on error
+        
+        # Calculate percentages
+        total_reviews = len(rows)
+        positive_pct = round((sentiment_counts["Positive"] / total_reviews) * 100) if total_reviews > 0 else 0
+        negative_pct = round((sentiment_counts["Negative"] / total_reviews) * 100) if total_reviews > 0 else 0
+        neutral_pct = round((sentiment_counts["Neutral"] / total_reviews) * 100) if total_reviews > 0 else 0
+        
+        # Format sentiment summary
+        sentiment_summary = f"Overall Sentiment: {positive_pct}% Positive, {negative_pct}% Negative, {neutral_pct}% Neutral"
+        
         # Create embed with reviews
         embed = discord.Embed(
             title=f"📋 Reviews for {target_user.display_name}",
-            description=f"Found **{len(rows)}** review(s) for {target_user.mention}",
+            description=f"Found **{len(rows)}** review(s) for {target_user.mention}\n\n**{sentiment_summary}**",
             color=discord.Color.green()
         )
         embed.set_thumbnail(url=target_user.display_avatar.url)
