@@ -21,6 +21,9 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Database connection pool (will be initialized in on_ready)
 db_pool = None
 
+# Track if commands have been synced (to prevent rate limiting)
+commands_synced = False
+
 # Initialize VADER sentiment analyzer
 sentiment_analyzer = SentimentIntensityAnalyzer()
 
@@ -53,42 +56,54 @@ def analyze_sentiment(text: str) -> str:
 
 @bot.event
 async def on_ready():
-    global db_pool
+    global db_pool, commands_synced
     print(f'{bot.user} has logged in!')
     print(f'Bot is in {len(bot.guilds)} server(s)')
     
-    # Initialize database connection pool
-    try:
-        # Option 1: Use DATABASE_URL if you have a full connection string
-        database_url = os.getenv('DATABASE_URL')
-        if database_url:
-            db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10)
-            print("✅ Connected to database using DATABASE_URL")
-        else:
-            # Option 2: Use individual connection parameters
-            db_pool = await asyncpg.create_pool(
-                user=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD"),
-                host=os.getenv("DB_HOST"),
-                port=int(os.getenv("DB_PORT", 5432)),
-                database=os.getenv("DB_NAME"),
-                min_size=1,
-                max_size=10
-            )
-            print("✅ Connected to database using individual parameters")
-        
-        # Create tables if they don't exist
-        await create_tables()
-        
-    except Exception as e:
-        print(f"❌ Failed to connect to database: {e}")
-        print("Bot will continue running but database features will not work.")
+    # Initialize database connection pool (only if not already connected)
+    if not db_pool:
+        try:
+            # Option 1: Use DATABASE_URL if you have a full connection string
+            database_url = os.getenv('DATABASE_URL')
+            if database_url:
+                db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10)
+                print("✅ Connected to database using DATABASE_URL")
+            else:
+                # Option 2: Use individual connection parameters
+                db_pool = await asyncpg.create_pool(
+                    user=os.getenv("DB_USER"),
+                    password=os.getenv("DB_PASSWORD"),
+                    host=os.getenv("DB_HOST"),
+                    port=int(os.getenv("DB_PORT", 5432)),
+                    database=os.getenv("DB_NAME"),
+                    min_size=1,
+                    max_size=10
+                )
+                print("✅ Connected to database using individual parameters")
+            
+            # Create tables if they don't exist
+            await create_tables()
+            
+        except Exception as e:
+            print(f"❌ Failed to connect to database: {e}")
+            print("Bot will continue running but database features will not work.")
     
-    try:
-        synced = await bot.tree.sync()
-        print(f'Synced {len(synced)} command(s)')
-    except Exception as e:
-        print(f'Failed to sync commands: {e}')
+    # Only sync commands once to avoid rate limiting (429 errors)
+    if not commands_synced:
+        try:
+            synced = await bot.tree.sync()
+            print(f'✅ Synced {len(synced)} command(s)')
+            commands_synced = True
+        except discord.HTTPException as e:
+            if e.status == 429:
+                print(f'⚠️ Rate limited while syncing commands. Commands may already be synced.')
+                print(f'   Discord allows command syncing once per hour. Bot will continue running.')
+            else:
+                print(f'❌ Failed to sync commands: {e}')
+        except Exception as e:
+            print(f'❌ Failed to sync commands: {e}')
+    else:
+        print('ℹ️ Commands already synced, skipping to avoid rate limits')
 
 
 async def create_tables():
