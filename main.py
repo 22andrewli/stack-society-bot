@@ -5,6 +5,9 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import asyncpg
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from webserver import keep_alive
+
+keep_alive()
 
 # Load environment variables from .env file
 load_dotenv()

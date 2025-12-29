@@ -75,16 +75,21 @@ To keep your bot running 24/7, you have several hosting options:
 ### Option 1: Render (Free Tier Available) ⭐ Recommended for Beginners
 
 1. **Create a Render account** at https://render.com
-2. **Create a new Web Service:**
+2. **Create a new Background Worker** (NOT a Web Service):
+   - Click "New +" → "Background Worker"
    - Connect your GitHub repository (or use Render's Git integration)
    - Build command: `pip install -r requirements.txt`
-   - Start command: `python main.py`
+   - Start command: `python main.py` (or Render will use your Procfile)
 3. **Set environment variables:**
    - In Render dashboard, go to Environment
    - Add `DISCORD_BOT_TOKEN` with your bot token
+   - Add `DATABASE_URL` if using a database
 4. **Deploy:** Render will automatically deploy and keep your bot running
 
-**Note:** Free tier may spin down after inactivity, but will wake up when needed.
+**Note:** 
+- Use "Background Worker" service type, NOT "Web Service" (bots don't need HTTP endpoints)
+- Free tier may spin down after inactivity, but will wake up when needed
+- Your Procfile should contain: `worker: python main.py`
 
 ### Option 2: Railway (Easy Setup)
 
