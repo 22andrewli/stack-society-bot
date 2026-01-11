@@ -5,12 +5,9 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import asyncpg
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from webserver import keep_alive
 import asyncio
 import time
 from datetime import datetime
-
-keep_alive()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -450,7 +447,7 @@ async def vouch(interaction: discord.Interaction, player: discord.User, amount: 
         title = "💵 Vouch Updated" if is_update else "💵 New Vouch"
         embed = discord.Embed(
             title=title,
-            description=f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Amount:** ${amount:,.2f}\n**Type:** {vouch_type_value.upper()}",
+            description=f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Amount:** ${amount:,.0f}\n**Type:** {vouch_type_value.upper()}",
             color=discord.Color.green() if vouch_type_value == "hard" else discord.Color.orange()
         )
         embed.set_thumbnail(url=player.display_avatar.url)
@@ -698,8 +695,9 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
             await interaction.response.send_message("❌ Amount must be greater than 0.", ephemeral=True)
             return
         
-        # Save or update debt to database (UPSERT)
-        is_update = False
+        # Add debt to database (add to existing or create new)
+        previous_amount = None
+        new_amount = amount
         try:
             async with db_pool.acquire() as conn:
                 # Check if debt already exists
@@ -710,21 +708,21 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
                 """, player.name, interaction.user.name)
                 
                 if existing:
-                    # Update existing debt
+                    # Add to existing debt
+                    previous_amount = float(existing['debt_amount'])
+                    new_amount = previous_amount + amount
                     await conn.execute("""
                         UPDATE debts
                         SET debt_amount = $1, edited_on = CURRENT_TIMESTAMP
                         WHERE player = $2 AND host = $3
-                    """, amount, player.name, interaction.user.name)
-                    is_update = True
-                    print(f"✅ Updated debt in database: {player.name} debt by {interaction.user.name} for ${amount}")
+                    """, new_amount, player.name, interaction.user.name)
+                    print(f"✅ Added to debt in database: {player.name} debt by {interaction.user.name} - added ${amount} (total: ${new_amount})")
                 else:
                     # Insert new debt
                     await conn.execute("""
                         INSERT INTO debts (player, host, debt_amount)
                         VALUES ($1, $2, $3)
                     """, player.name, interaction.user.name, amount)
-                    is_update = False
                     print(f"✅ Saved debt to database: {player.name} debt by {interaction.user.name} for ${amount}")
         except Exception as e:
             print(f"❌ Error saving debt to database: {e}")
@@ -732,14 +730,22 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
             return
         
         # Create embed for the debt
-        title = "💸 Debt Updated" if is_update else "💸 New Debt"
+        if previous_amount is not None:
+            # Debt was added to existing
+            title = "💸 Debt Added"
+            description = f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Added:** ${amount:,.0f}\n**Previous Total:** ${previous_amount:,.0f}\n**New Total:** ${new_amount:,.0f}"
+        else:
+            # New debt created
+            title = "💸 New Debt"
+            description = f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Debt Amount:** ${amount:,.0f}"
+        
         embed = discord.Embed(
             title=title,
-            description=f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Debt Amount:** ${amount:,.2f}",
+            description=description,
             color=discord.Color.red()
         )
         embed.set_thumbnail(url=player.display_avatar.url)
-        embed.set_footer(text=f"Debt {'updated' if is_update else 'submitted'} by {interaction.user.display_name}")
+        embed.set_footer(text=f"Debt {'added' if previous_amount is not None else 'submitted'} by {interaction.user.display_name}")
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.response.send_message(embed=embed)
@@ -754,17 +760,17 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
             await interaction.followup.send("❌ An error occurred while processing your debt. Please try again.", ephemeral=True)
 
 
-@bot.tree.command(name="debt_clear", description="Clear or reduce a debt for a player")
+@bot.tree.command(name="remove_debt", description="Clear or reduce a debt for a player")
 @app_commands.describe(
     player="The Discord user to clear debt for",
     amount="The amount to clear (leave empty to clear all)"
 )
-async def debt_clear(interaction: discord.Interaction, player: discord.User, amount: float = None):
+async def remove_debt(interaction: discord.Interaction, player: discord.User, amount: float = None):
     """
     Slash command to clear or reduce a debt for a player.
     
-    Usage: /debt_clear user:@username amount:50
-    or: /debt_clear user:@username (to clear all)
+    Usage: /remove_debt user:@username amount:50
+    or: /remove_debt user:@username (to clear all)
     """
     try:
         target_user = player
@@ -804,7 +810,7 @@ async def debt_clear(interaction: discord.Interaction, player: discord.User, amo
                     
                     embed = discord.Embed(
                         title="✅ Debt Cleared",
-                        description=f"All debt for {target_user.mention} has been cleared.\n**Previous amount:** ${current_debt:,.2f}",
+                        description=f"All debt for {target_user.mention} has been cleared.\n**Previous amount:** ${current_debt:,.0f}",
                         color=discord.Color.green()
                     )
                     embed.set_thumbnail(url=target_user.display_avatar.url)
@@ -831,7 +837,7 @@ async def debt_clear(interaction: discord.Interaction, player: discord.User, amo
                         
                         embed = discord.Embed(
                             title="✅ Debt Cleared",
-                            description=f"Debt for {target_user.mention} has been fully cleared.\n**Previous amount:** ${current_debt:,.2f}\n**Cleared:** ${amount:,.2f}",
+                            description=f"Debt for {target_user.mention} has been fully cleared.\n**Previous amount:** ${current_debt:,.0f}\n**Cleared:** ${amount:,.0f}",
                             color=discord.Color.green()
                         )
                     else:
@@ -846,7 +852,7 @@ async def debt_clear(interaction: discord.Interaction, player: discord.User, amo
                         
                         embed = discord.Embed(
                             title="💸 Debt Reduced",
-                            description=f"Debt for {target_user.mention} has been reduced.\n**Previous amount:** ${current_debt:,.2f}\n**Reduced by:** ${amount:,.2f}\n**New amount:** ${new_debt:,.2f}",
+                            description=f"Debt for {target_user.mention} has been reduced.\n**Previous amount:** ${current_debt:,.0f}\n**Reduced by:** ${amount:,.0f}\n**New amount:** ${new_debt:,.0f}",
                             color=discord.Color.orange()
                         )
                     
@@ -861,7 +867,7 @@ async def debt_clear(interaction: discord.Interaction, player: discord.User, amo
             return
         
     except Exception as e:
-        print(f"Error in debt_clear command: {e}")
+        print(f"Error in remove_debt command: {e}")
         import traceback
         traceback.print_exc()
         if not interaction.response.is_done():
@@ -962,7 +968,7 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
                 else:
                     formatted_date = created_at.strftime('%m/%d/%Y')
             
-            debts_text += f"{debt['host']}: ${float(debt['debt_amount']):,.2f} on {formatted_date}\n"
+            debts_text += f"{debt['host']}: ${float(debt['debt_amount']):,.0f} on {formatted_date}\n"
         
         if len(debts_text) > 1024:
             debts_text = debts_text[:1020] + "..."
