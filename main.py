@@ -68,6 +68,36 @@ def escape_discord_markdown(text: str) -> str:
     return text.replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*").replace("~", "\\~").replace("`", "\\`").replace("|", "\\|")
 
 
+async def get_safe_user_display(interaction: discord.Interaction, user: discord.User) -> str:
+    """
+    Get a safe display format for a user that works even if they're not in the guild.
+    Uses fetch_member() to check guild membership via API (not just cache).
+    
+    Args:
+        interaction: The Discord interaction object
+        user: The Discord user to get display for
+        
+    Returns:
+        User mention if in guild, otherwise "DisplayName (username)"
+    """
+    try:
+        if interaction.guild:
+            # Use fetch_member to force API lookup (not just cache)
+            try:
+                member = await interaction.guild.fetch_member(user.id)
+                return member.mention
+            except discord.NotFound:
+                # User is not in the guild
+                return f"{user.display_name} ({user.name})"
+            except Exception:
+                # Fallback on any other error
+                return f"{user.display_name} ({user.name})"
+        else:
+            return f"{user.display_name} ({user.name})"
+    except:
+        return f"{user.display_name} ({user.name})"
+
+
 @bot.event
 async def on_ready():
     global db_pool, commands_synced
@@ -257,20 +287,14 @@ async def review(interaction: discord.Interaction, user: discord.User, review_te
     Usage: /add_review @username "review text here"
     """
     try:
-        # Try to get a safe mention - use display_name if user not in guild
-        try:
-            # Check if user is in the guild
-            if interaction.guild and interaction.guild.get_member(user.id):
-                user_display = user.mention
-            else:
-                user_display = f"{user.display_name} ({user.name})"
-        except:
-            user_display = f"{user.display_name} ({user.name})"
+        # Get safe mention for user and reviewer
+        user_display = await get_safe_user_display(interaction, user)
+        reviewer_display = await get_safe_user_display(interaction, interaction.user)
         
         # Create an embed for the review
         embed = discord.Embed(
             title="📝 New Review",
-            description=f"**Reviewed User:** {user_display}\n**Reviewer:** {interaction.user.mention}\n\n**Review:**\n{review_text}",
+            description=f"**Reviewed User:** {user_display}\n**Reviewer:** {reviewer_display}\n\n**Review:**\n{review_text}",
             color=discord.Color.blue()
         )
         embed.set_thumbnail(url=user.display_avatar.url)
@@ -334,8 +358,11 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
             await interaction.response.send_message("❌ An error occurred while fetching reviews. Please try again.", ephemeral=True)
             return
         
+        # Get safe mention for target user
+        user_display = await get_safe_user_display(interaction, target_user)
+        
         if not rows:
-            await interaction.response.send_message(f"📭 No reviews found for {target_user.mention}.", ephemeral=True)
+            await interaction.response.send_message(f"📭 No reviews found for {user_display}.", ephemeral=True)
             return
         
         # Analyze sentiment for all reviews
@@ -360,7 +387,7 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
         # Create embed with reviews
         embed = discord.Embed(
             title=f"📋 Reviews for {target_user.display_name}",
-            description=f"Found **{len(rows)}** review(s) for {target_user.mention}\n\n**{sentiment_summary}**",
+            description=f"Found **{len(rows)}** review(s) for {user_display}\n\n**{sentiment_summary}**",
             color=discord.Color.green()
         )
         embed.set_thumbnail(url=target_user.display_avatar.url)
@@ -470,19 +497,13 @@ async def vouch(interaction: discord.Interaction, player: discord.User, amount: 
         # Create embed for the vouch
         title = "💵 Vouch Updated" if is_update else "💵 New Vouch"
         
-        # Try to get a safe mention - use display_name if user not in guild
-        try:
-            # Check if player is in the guild
-            if interaction.guild and interaction.guild.get_member(player.id):
-                player_display = player.mention
-            else:
-                player_display = f"{player.display_name} ({player.name})"
-        except:
-            player_display = f"{player.display_name} ({player.name})"
+        # Get safe mention for player
+        player_display = await get_safe_user_display(interaction, player)
+        host_display = await get_safe_user_display(interaction, interaction.user)
         
         embed = discord.Embed(
             title=title,
-            description=f"**Player:** {player_display}\n**Host:** {interaction.user.mention}\n**Amount:** ${amount:,.0f}\n**Type:** {vouch_type_value.upper()}",
+            description=f"**Player:** {player_display}\n**Host:** {host_display}\n**Amount:** ${amount:,.0f}\n**Type:** {vouch_type_value.upper()}",
             color=discord.Color.green() if vouch_type_value == "hard" else discord.Color.orange()
         )
         embed.set_thumbnail(url=player.display_avatar.url)
@@ -533,14 +554,17 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
             await interaction.response.send_message("❌ An error occurred while fetching vouches. Please try again.", ephemeral=True)
             return
         
+        # Get safe mention for target user
+        user_display = await get_safe_user_display(interaction, target_user)
+        
         if not rows:
-            await interaction.response.send_message(f"📭 No vouches found for {target_user.mention}.", ephemeral=True)
+            await interaction.response.send_message(f"📭 No vouches found for {user_display}.", ephemeral=True)
             return
         
         # Create embed with vouches
         embed = discord.Embed(
             title=f"💵 Vouches for {target_user.display_name}",
-            description=f"Found **{len(rows)}** vouch(es) for {target_user.mention}",
+            description=f"Found **{len(rows)}** vouch(es) for {user_display}",
             color=discord.Color.gold()
         )
         embed.set_thumbnail(url=target_user.display_avatar.url)
@@ -656,6 +680,9 @@ async def remove_vouch(interaction: discord.Interaction, player: discord.User):
         player_username = target_user.name
         host_username = interaction.user.name
         
+        # Get safe mention for target user
+        user_display = await get_safe_user_display(interaction, target_user)
+        
         if not db_pool:
             await interaction.response.send_message("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
             return
@@ -682,7 +709,7 @@ async def remove_vouch(interaction: discord.Interaction, player: discord.User):
                     # Create success embed
                     embed = discord.Embed(
                         title="🗑️ Vouch Removed",
-                        description=f"Your vouch for {target_user.mention} has been removed.",
+                        description=f"Your vouch for {user_display} has been removed.",
                         color=discord.Color.red()
                     )
                     embed.set_thumbnail(url=target_user.display_avatar.url)
@@ -693,7 +720,7 @@ async def remove_vouch(interaction: discord.Interaction, player: discord.User):
                 else:
                     # No vouch found
                     await interaction.response.send_message(
-                        f"📭 You don't have a vouch for {target_user.mention} to remove.",
+                        f"📭 You don't have a vouch for {user_display} to remove.",
                         ephemeral=True
                     )
         except Exception as e:
@@ -767,24 +794,18 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
             return
         
         # Create embed for the debt
-        # Try to get a safe mention - use display_name if user not in guild
-        try:
-            # Check if player is in the guild
-            if interaction.guild and interaction.guild.get_member(player.id):
-                player_display = player.mention
-            else:
-                player_display = f"{player.display_name} ({player.name})"
-        except:
-            player_display = f"{player.display_name} ({player.name})"
+        # Get safe mention for player and host
+        player_display = await get_safe_user_display(interaction, player)
+        host_display = await get_safe_user_display(interaction, interaction.user)
         
         if previous_amount is not None:
             # Debt was added to existing
             title = "💸 Debt Added"
-            description = f"**Player:** {player_display}\n**Host:** {interaction.user.mention}\n**Added:** ${amount:,.0f}\n**Previous Total:** ${previous_amount:,.0f}\n**New Total:** ${new_amount:,.0f}"
+            description = f"**Player:** {player_display}\n**Host:** {host_display}\n**Added:** ${amount:,.0f}\n**Previous Total:** ${previous_amount:,.0f}\n**New Total:** ${new_amount:,.0f}"
         else:
             # New debt created
             title = "💸 New Debt"
-            description = f"**Player:** {player_display}\n**Host:** {interaction.user.mention}\n**Debt Amount:** ${amount:,.0f}"
+            description = f"**Player:** {player_display}\n**Host:** {host_display}\n**Debt Amount:** ${amount:,.0f}"
         
         embed = discord.Embed(
             title=title,
@@ -824,6 +845,9 @@ async def remove_debt(interaction: discord.Interaction, player: discord.User, am
         player_username = target_user.name
         host_username = interaction.user.name
         
+        # Get safe mention for target user
+        user_display = await get_safe_user_display(interaction, target_user)
+        
         if not db_pool:
             await interaction.response.send_message("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
             return
@@ -839,7 +863,7 @@ async def remove_debt(interaction: discord.Interaction, player: discord.User, am
                 
                 if not existing:
                     await interaction.response.send_message(
-                        f"📭 You don't have a debt recorded for {target_user.mention}.",
+                        f"📭 You don't have a debt recorded for {user_display}.",
                         ephemeral=True
                     )
                     return
@@ -857,7 +881,7 @@ async def remove_debt(interaction: discord.Interaction, player: discord.User, am
                     
                     embed = discord.Embed(
                         title="✅ Debt Cleared",
-                        description=f"All debt for {target_user.mention} has been cleared.\n**Previous amount:** ${current_debt:,.0f}",
+                        description=f"All debt for {user_display} has been cleared.\n**Previous amount:** ${current_debt:,.0f}",
                         color=discord.Color.green()
                     )
                     embed.set_thumbnail(url=target_user.display_avatar.url)
@@ -884,7 +908,7 @@ async def remove_debt(interaction: discord.Interaction, player: discord.User, am
                         
                         embed = discord.Embed(
                             title="✅ Debt Cleared",
-                            description=f"Debt for {target_user.mention} has been fully cleared.\n**Previous amount:** ${current_debt:,.0f}\n**Cleared:** ${amount:,.0f}",
+                            description=f"Debt for {user_display} has been fully cleared.\n**Previous amount:** ${current_debt:,.0f}\n**Cleared:** ${amount:,.0f}",
                             color=discord.Color.green()
                         )
                     else:
@@ -899,7 +923,7 @@ async def remove_debt(interaction: discord.Interaction, player: discord.User, am
                         
                         embed = discord.Embed(
                             title="💸 Debt Reduced",
-                            description=f"Debt for {target_user.mention} has been reduced.\n**Previous amount:** ${current_debt:,.0f}\n**Reduced by:** ${amount:,.0f}\n**New amount:** ${new_debt:,.0f}",
+                            description=f"Debt for {user_display} has been reduced.\n**Previous amount:** ${current_debt:,.0f}\n**Reduced by:** ${amount:,.0f}\n**New amount:** ${new_debt:,.0f}",
                             color=discord.Color.orange()
                         )
                     
@@ -955,8 +979,11 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
             await interaction.response.send_message("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
             return
         
+        # Get safe mention for target user
+        user_display = await get_safe_user_display(interaction, target_user)
+        
         if not rows:
-            await interaction.response.send_message(f"📭 No debts found for {target_user.mention}.", ephemeral=True)
+            await interaction.response.send_message(f"📭 No debts found for {user_display}.", ephemeral=True)
             return
         
         # Get all unique hosts and try to mention them
@@ -968,6 +995,8 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
         
         host_mentions = []
         # Try to mention hosts by username
+        # Note: We only have usernames, not User objects, so we use get_member_named for cache lookup
+        # If not found in cache, we display the escaped username
         for host_data in unique_hosts.values():
             host_username = host_data['username']
             if interaction.guild:
@@ -975,15 +1004,18 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
                 if host_member:
                     host_mentions.append(host_member.mention)
                 else:
-                    host_mentions.append(f"`{host_username}`")
+                    # Not found in cache - use escaped username
+                    escaped_host = escape_discord_markdown(host_username)
+                    host_mentions.append(f"`{escaped_host}`")
             else:
-                host_mentions.append(f"`{host_username}`")
+                escaped_host = escape_discord_markdown(host_username)
+                host_mentions.append(f"`{escaped_host}`")
         
         # Create embed with debts
         hosts_text = ", ".join(host_mentions) if host_mentions else "Unknown hosts"
         embed = discord.Embed(
             title=f"💸 Debts for {target_user.display_name}",
-            description=f"Found **{len(rows)}** debt(s) for {target_user.mention}\n\n**Hosts:** {hosts_text}",
+            description=f"Found **{len(rows)}** debt(s) for {user_display}\n\n**Hosts:** {hosts_text}",
             color=discord.Color.red()
         )
         embed.set_thumbnail(url=target_user.display_avatar.url)
