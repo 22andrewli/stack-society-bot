@@ -393,10 +393,10 @@ async def review(interaction: discord.Interaction, user: discord.User, review_te
             try:
                 async with db_pool.acquire() as conn:
                     await conn.execute("""
-                        INSERT INTO reviews (player, host, text)
-                        VALUES ($1, $2, $3)
-                    """, user.name, interaction.user.name, review_text)
-                    print(f"✅ Saved review to database: {user.name} reviewed by {interaction.user.name}")
+                        INSERT INTO reviews (player, player_id, host, host_id, text)
+                        VALUES ($1, $2, $3, $4, $5)
+                    """, user.name, user.id, interaction.user.name, interaction.user.id, review_text)
+                    print(f"✅ Saved review to database: {user.name} ({user.id}) reviewed by {interaction.user.name} ({interaction.user.id})")
             except Exception as e:
                 print(f"❌ Error saving review to database: {e}")
         else:
@@ -561,19 +561,19 @@ async def vouch(interaction: discord.Interaction, player: discord.User, amount: 
                     # Update existing vouch
                     await conn.execute("""
                         UPDATE vouches
-                        SET vouch_amount = $1, vouch_type = $2, edited_on = CURRENT_TIMESTAMP
-                        WHERE player = $3 AND host = $4
-                    """, amount, vouch_type_value, player.name, interaction.user.name)
+                        SET vouch_amount = $1, vouch_type = $2, player_id = $3, host_id = $4, edited_on = CURRENT_TIMESTAMP
+                        WHERE player = $5 AND host = $6
+                    """, amount, vouch_type_value, player.id, interaction.user.id, player.name, interaction.user.name)
                     is_update = True
-                    print(f"✅ Updated vouch in database: {player.name} vouched by {interaction.user.name} for ${amount} ({vouch_type_value})")
+                    print(f"✅ Updated vouch in database: {player.name} ({player.id}) vouched by {interaction.user.name} ({interaction.user.id}) for ${amount} ({vouch_type_value})")
                 else:
                     # Insert new vouch
                     await conn.execute("""
-                        INSERT INTO vouches (player, host, vouch_amount, vouch_type)
-                        VALUES ($1, $2, $3, $4)
-                    """, player.name, interaction.user.name, amount, vouch_type_value)
+                        INSERT INTO vouches (player, player_id, host, host_id, vouch_amount, vouch_type)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                    """, player.name, player.id, interaction.user.name, interaction.user.id, amount, vouch_type_value)
                     is_update = False
-                    print(f"✅ Saved vouch to database: {player.name} vouched by {interaction.user.name} for ${amount} ({vouch_type_value})")
+                    print(f"✅ Saved vouch to database: {player.name} ({player.id}) vouched by {interaction.user.name} ({interaction.user.id}) for ${amount} ({vouch_type_value})")
         except Exception as e:
             print(f"❌ Error saving vouch to database: {e}")
             await interaction.response.send_message("❌ An error occurred while saving the vouch. Please try again.", ephemeral=True)
@@ -862,17 +862,17 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
                     new_amount = previous_amount + amount
                     await conn.execute("""
                         UPDATE debts
-                        SET debt_amount = $1, edited_on = CURRENT_TIMESTAMP
-                        WHERE player = $2 AND host = $3
-                    """, new_amount, player.name, interaction.user.name)
-                    print(f"✅ Added to debt in database: {player.name} debt by {interaction.user.name} - added ${amount} (total: ${new_amount})")
+                        SET debt_amount = $1, player_id = $2, host_id = $3, edited_on = CURRENT_TIMESTAMP
+                        WHERE player = $4 AND host = $5
+                    """, new_amount, player.id, interaction.user.id, player.name, interaction.user.name)
+                    print(f"✅ Added to debt in database: {player.name} ({player.id}) debt by {interaction.user.name} ({interaction.user.id}) - added ${amount} (total: ${new_amount})")
                 else:
                     # Insert new debt
                     await conn.execute("""
-                        INSERT INTO debts (player, host, debt_amount)
-                        VALUES ($1, $2, $3)
-                    """, player.name, interaction.user.name, amount)
-                    print(f"✅ Saved debt to database: {player.name} debt by {interaction.user.name} for ${amount}")
+                        INSERT INTO debts (player, player_id, host, host_id, debt_amount)
+                        VALUES ($1, $2, $3, $4, $5)
+                    """, player.name, player.id, interaction.user.name, interaction.user.id, amount)
+                    print(f"✅ Saved debt to database: {player.name} ({player.id}) debt by {interaction.user.name} ({interaction.user.id}) for ${amount}")
         except Exception as e:
             print(f"❌ Error saving debt to database: {e}")
             await interaction.response.send_message("❌ An error occurred while saving the debt. Please try again.", ephemeral=True)
