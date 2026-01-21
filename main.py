@@ -113,25 +113,35 @@ async def get_username_mention(interaction: discord.Interaction, username: str) 
         Member mention if found in guild, otherwise escaped username in code format
     """
     try:
-        if interaction.guild:
-            # Try cache lookup first (most efficient)
-            member = interaction.guild.get_member_named(username)
-            if member:
+        if not interaction.guild:
+            escaped_username = escape_discord_markdown(username)
+            return f"`{escaped_username}`"
+        
+        # Try cache lookup first (most efficient)
+        member = interaction.guild.get_member_named(username)
+        if member and isinstance(member, discord.Member):
+            return member.mention
+        
+        # If not found, search through all cached members (case-insensitive)
+        username_lower = username.lower()
+        for member in interaction.guild.members:
+            if not isinstance(member, discord.Member):
+                continue
+                
+            # Check name, display_name, and global_name, case-insensitive
+            member_name_match = member.name and member.name.lower() == username_lower
+            display_name_match = member.display_name and member.display_name.lower() == username_lower
+            global_name_match = member.global_name and member.global_name.lower() == username_lower
+            
+            if member_name_match or display_name_match or global_name_match:
                 return member.mention
-            
-            # If not in cache, search through cached members
-            # This is more efficient than fetch_members() for large guilds
-            for member in interaction.guild.members:
-                if member.name == username or member.display_name == username:
-                    return member.mention
-            
-            # Not found - return escaped username
-            escaped_username = escape_discord_markdown(username)
-            return f"`{escaped_username}`"
-        else:
-            escaped_username = escape_discord_markdown(username)
-            return f"`{escaped_username}`"
-    except:
+        
+        # Not found in guild - return escaped username (not raw ID)
+        escaped_username = escape_discord_markdown(username)
+        return f"`{escaped_username}`"
+    except Exception as e:
+        # On any error, return escaped username
+        print(f"Error getting mention for {username}: {e}")
         escaped_username = escape_discord_markdown(username)
         return f"`{escaped_username}`"
 
