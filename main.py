@@ -117,6 +117,17 @@ async def get_username_mention(interaction: discord.Interaction, username: str) 
             escaped_username = escape_discord_markdown(username)
             return f"`{escaped_username}`"
         
+        # Check if username looks like a Discord ID (all digits)
+        # If so, try to find member by ID instead
+        if username.isdigit() and len(username) >= 17:
+            try:
+                member_id = int(username)
+                member = interaction.guild.get_member(member_id)
+                if member and isinstance(member, discord.Member):
+                    return member.mention
+            except:
+                pass
+        
         # Try cache lookup first (most efficient)
         member = interaction.guild.get_member_named(username)
         if member and isinstance(member, discord.Member):
@@ -1199,6 +1210,12 @@ async def get_all_debt(interaction: discord.Interaction):
             
             # Try to get player mention, fallback to escaped name
             player_mention = await get_username_mention(interaction, player_name)
+            
+            # Safety check: if player_mention looks like a raw ID, use escaped username instead
+            if player_mention.startswith('<@') and player_mention.endswith('>') and len(player_mention) > 20:
+                # This is a raw ID, use escaped username instead
+                escaped_player_name = escape_discord_markdown(player_name)
+                player_mention = f"`{escaped_player_name}`"
             
             # Build the value text with individual debt entries
             value_text = ""
