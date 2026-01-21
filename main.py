@@ -1028,6 +1028,7 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
 async def get_all_debt(interaction: discord.Interaction):
     """
     Slash command to retrieve debts for all players, sorted by highest total debt.
+    Shows individual debt entries per host.
     
     Usage: /get_all_debt
     """
@@ -1036,14 +1037,13 @@ async def get_all_debt(interaction: discord.Interaction):
             await interaction.response.send_message("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
             return
 
-        # Fetch aggregated debts by player, highest total first
+        # Fetch all individual debt entries
         try:
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT player, SUM(debt_amount) AS total_debt, COUNT(*) AS entry_count
+                    SELECT player, host, debt_amount
                     FROM debts
-                    GROUP BY player
-                    ORDER BY total_debt DESC
+                    ORDER BY player, debt_amount DESC
                 """)
         except Exception as e:
             print(f"❌ Error fetching all debts: {e}")
@@ -1054,26 +1054,71 @@ async def get_all_debt(interaction: discord.Interaction):
             await interaction.response.send_message("📭 No debts found.", ephemeral=True)
             return
 
+        # Group debts by player and calculate totals
+        player_debts = {}
+        for row in rows:
+            player_name = row["player"]
+            host_name = row["host"]
+            debt_amount = float(row["debt_amount"])
+            
+            if player_name not in player_debts:
+                player_debts[player_name] = {
+                    "total": 0,
+                    "hosts": [],
+                    "unique_hosts": set()
+                }
+            
+            player_debts[player_name]["total"] += debt_amount
+            player_debts[player_name]["hosts"].append({
+                "host": host_name,
+                "amount": debt_amount
+            })
+            player_debts[player_name]["unique_hosts"].add(host_name)
+
+        # Sort players by total debt (highest first)
+        sorted_players = sorted(
+            player_debts.items(),
+            key=lambda x: x[1]["total"],
+            reverse=True
+        )
+
         embed = discord.Embed(
             title="💸 All Debts",
-            description=f"Found **{len(rows)}** player(s) with debt (highest first)",
+            description=f"Found **{len(sorted_players)}** player(s) with debt (highest first)",
             color=discord.Color.red()
         )
 
-        # Limit to 25 fields (Discord embed limit)
-        rows_to_show = rows[:25]
-        for idx, row in enumerate(rows_to_show, 1):
-            player_name = row["player"]
-            total_debt = float(row["total_debt"])
-            entry_count = row["entry_count"]
+        # Build the debt list for each player
+        # Limit to avoid hitting Discord embed limits (25 fields, 1024 chars per field)
+        players_shown = 0
+        for player_name, debt_info in sorted_players:
+            if players_shown >= 25:  # Discord embed field limit
+                break
+            
+            total_debt = debt_info["total"]
+            host_count = len(debt_info["unique_hosts"])
+            
+            # Build the value text
+            value_text = f"**${total_debt:,.0f} owed to {host_count} host{'s' if host_count > 1 else ''}**\n"
+            
+            # Add individual debt entries
+            for host_entry in debt_info["hosts"]:
+                value_text += f"${host_entry['amount']:,.0f} owed to {host_entry['host']}\n"
+            
+            # Truncate if too long (Discord field value limit is 1024 characters)
+            if len(value_text) > 1020:
+                value_text = value_text[:1017] + "..."
+            
             embed.add_field(
-                name=f"{idx}. {player_name}",
-                value=f"${total_debt:,.0f} (entries: {entry_count})",
+                name=f"{players_shown + 1}. {player_name}",
+                value=value_text,
                 inline=False
             )
+            
+            players_shown += 1
 
-        if len(rows) > 25:
-            embed.set_footer(text=f"Showing top 25 of {len(rows)} players by debt (highest first)")
+        if len(sorted_players) > 25:
+            embed.set_footer(text=f"Showing top 25 of {len(sorted_players)} players by debt (highest first)")
         else:
             embed.set_footer(text="Ordered by debt amount (highest first)")
 
