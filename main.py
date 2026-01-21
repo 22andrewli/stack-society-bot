@@ -54,6 +54,20 @@ def analyze_sentiment(text: str) -> str:
         return "Neutral"  # Default to neutral on error
 
 
+def escape_discord_markdown(text: str) -> str:
+    """
+    Escape Discord markdown characters to prevent formatting.
+    
+    Args:
+        text: The text to escape
+        
+    Returns:
+        Text with Discord markdown characters escaped
+    """
+    # Characters that need escaping in Discord: _ * ~ ` |
+    return text.replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*").replace("~", "\\~").replace("`", "\\`").replace("|", "\\|")
+
+
 @bot.event
 async def on_ready():
     global db_pool, commands_synced
@@ -564,7 +578,8 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                     else:
                         formatted_date = created_at.strftime('%m/%d/%Y')
                 
-                hard_text += f"{vouch['host']}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+                escaped_host = escape_discord_markdown(vouch['host'])
+                hard_text += f"{escaped_host}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
             if len(hard_text) > 1024:
                 hard_text = hard_text[:1020] + "..."
             embed.add_field(
@@ -602,7 +617,8 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                     else:
                         formatted_date = created_at.strftime('%m/%d/%Y')
                 
-                soft_text += f"{vouch['host']}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+                escaped_host = escape_discord_markdown(vouch['host'])
+                soft_text += f"{escaped_host}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
             if len(soft_text) > 1024:
                 soft_text = soft_text[:1020] + "..."
             embed.add_field(
@@ -999,7 +1015,8 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
                 else:
                     formatted_date = created_at.strftime('%m/%d/%Y')
             
-            debts_text += f"{debt['host']}: ${float(debt['debt_amount']):,.0f} on {formatted_date}\n"
+            escaped_host = escape_discord_markdown(debt['host'])
+            debts_text += f"{escaped_host}: ${float(debt['debt_amount']):,.0f} on {formatted_date}\n"
         
         if len(debts_text) > 1024:
             debts_text = debts_text[:1020] + "..."
@@ -1098,19 +1115,23 @@ async def get_all_debt(interaction: discord.Interaction):
             total_debt = debt_info["total"]
             host_count = len(debt_info["unique_hosts"])
             
+            # Escape player name and host names to prevent Discord markdown formatting
+            escaped_player_name = escape_discord_markdown(player_name)
+            
             # Build the value text
             value_text = f"**${total_debt:,.0f} owed to {host_count} host{'s' if host_count > 1 else ''}**\n"
             
             # Add individual debt entries
             for host_entry in debt_info["hosts"]:
-                value_text += f"${host_entry['amount']:,.0f} owed to {host_entry['host']}\n"
+                escaped_host_name = escape_discord_markdown(host_entry['host'])
+                value_text += f"${host_entry['amount']:,.0f} owed to {escaped_host_name}\n"
             
             # Truncate if too long (Discord field value limit is 1024 characters)
             if len(value_text) > 1020:
                 value_text = value_text[:1017] + "..."
             
             embed.add_field(
-                name=f"{players_shown + 1}. {player_name}",
+                name=f"{players_shown + 1}. {escaped_player_name}",
                 value=value_text,
                 inline=False
             )
