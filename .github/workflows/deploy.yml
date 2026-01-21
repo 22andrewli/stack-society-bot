@@ -18,9 +18,14 @@ jobs:
             cd ~/ss_bot
             echo "📥 Pulling latest changes..."
             git pull origin main
-            echo "🔧 Activating virtual environment..."
+            echo "🔧 Setting up virtual environment..."
+            if [ ! -d "venv" ]; then
+              echo "Creating new virtual environment..."
+              python3 -m venv venv
+            fi
             source venv/bin/activate
-            echo "📦 Installing dependencies..."
+            echo "📦 Installing/updating dependencies..."
+            pip install --upgrade pip --quiet
             pip install -r requirements.txt --quiet
             echo "🔄 Restarting bot service..."
             sudo systemctl restart discord-bot
