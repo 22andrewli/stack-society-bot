@@ -100,6 +100,42 @@ async def get_safe_user_display(interaction: discord.Interaction, user: discord.
         return f"{user.display_name} ({user.name})"
 
 
+async def get_username_mention(interaction: discord.Interaction, username: str) -> str:
+    """
+    Get a mention for a user by username. Tries to find the member in the guild.
+    Works for both players and hosts.
+    
+    Args:
+        interaction: The Discord interaction object
+        username: The username to find and mention
+        
+    Returns:
+        Member mention if found in guild, otherwise escaped username in code format
+    """
+    try:
+        if interaction.guild:
+            # Try cache lookup first (most efficient)
+            member = interaction.guild.get_member_named(username)
+            if member:
+                return member.mention
+            
+            # If not in cache, search through cached members
+            # This is more efficient than fetch_members() for large guilds
+            for member in interaction.guild.members:
+                if member.name == username or member.display_name == username:
+                    return member.mention
+            
+            # Not found - return escaped username
+            escaped_username = escape_discord_markdown(username)
+            return f"`{escaped_username}`"
+        else:
+            escaped_username = escape_discord_markdown(username)
+            return f"`{escaped_username}`"
+    except:
+        escaped_username = escape_discord_markdown(username)
+        return f"`{escaped_username}`"
+
+
 async def get_host_mention(interaction: discord.Interaction, host_username: str) -> str:
     """
     Get a mention for a host by username. Tries to find the member in the guild.
@@ -111,28 +147,7 @@ async def get_host_mention(interaction: discord.Interaction, host_username: str)
     Returns:
         Member mention if found in guild, otherwise escaped username in code format
     """
-    try:
-        if interaction.guild:
-            # Try cache lookup first (most efficient)
-            host_member = interaction.guild.get_member_named(host_username)
-            if host_member:
-                return host_member.mention
-            
-            # If not in cache, search through cached members
-            # This is more efficient than fetch_members() for large guilds
-            for member in interaction.guild.members:
-                if member.name == host_username or member.display_name == host_username:
-                    return member.mention
-            
-            # Not found - return escaped username
-            escaped_host = escape_discord_markdown(host_username)
-            return f"`{escaped_host}`"
-        else:
-            escaped_host = escape_discord_markdown(host_username)
-            return f"`{escaped_host}`"
-    except:
-        escaped_host = escape_discord_markdown(host_username)
-        return f"`{escaped_host}`"
+    return await get_username_mention(interaction, host_username)
 
 
 @bot.event
@@ -1172,8 +1187,8 @@ async def get_all_debt(interaction: discord.Interaction):
             
             total_debt = debt_info["total"]
             
-            # Escape player name and host names to prevent Discord markdown formatting
-            escaped_player_name = escape_discord_markdown(player_name)
+            # Try to get player mention, fallback to escaped name
+            player_mention = await get_username_mention(interaction, player_name)
             
             # Build the value text with individual debt entries
             value_text = ""
@@ -1186,7 +1201,7 @@ async def get_all_debt(interaction: discord.Interaction):
                 value_text = value_text[:1017] + "..."
             
             embed.add_field(
-                name=f"{players_shown + 1}. {escaped_player_name} - ${total_debt:,.0f}",
+                name=f"{players_shown + 1}. {player_mention} - ${total_debt:,.0f}",
                 value=value_text,
                 inline=False
             )
