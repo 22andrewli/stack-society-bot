@@ -183,6 +183,65 @@ async def get_host_mention(interaction: discord.Interaction, host_username: str)
     return await get_username_mention(interaction, host_username)
 
 
+async def get_mention_by_id_or_username(interaction: discord.Interaction, user_id: int = None, username: str = None) -> str:
+    """
+    Get a mention for a user by ID (preferred) or username (fallback).
+    Tries ID first, then falls back to username lookup.
+    
+    Args:
+        interaction: The Discord interaction object
+        user_id: The Discord user ID (optional, preferred)
+        username: The username (optional, fallback)
+        
+    Returns:
+        Member mention if found, otherwise escaped username in code format
+    """
+    try:
+        if not interaction.guild:
+            # No guild context - use display format
+            if username:
+                escaped_username = escape_discord_markdown(username)
+                return f"`{escaped_username}`"
+            return "`Unknown`"
+        
+        # First, try to get member by ID (most reliable)
+        if user_id:
+            try:
+                # Ensure user_id is an integer
+                if isinstance(user_id, str):
+                    user_id = int(user_id)
+                elif user_id is None:
+                    user_id = None
+                
+                if user_id:
+                    # Try cache first (fast, no API call)
+                    member = interaction.guild.get_member(user_id)
+                    if member and isinstance(member, discord.Member):
+                        # Return the mention directly - even if it's a raw ID, it's still valid
+                        # Raw IDs happen when Discord can't resolve the member, but they're still clickable mentions
+                        return member.mention
+                    
+                    # Don't do fetch_member() here as it's slow and we might be processing many users
+                    # Fall through to username lookup instead (uses cache, faster)
+            except (ValueError, TypeError) as e:
+                print(f"Invalid user_id format {user_id}: {e}")
+            except Exception as e:
+                print(f"Error getting member by ID {user_id}: {e}")
+        
+        # Fallback to username lookup if ID not available or not found
+        if username:
+            return await get_username_mention(interaction, username)
+        
+        # No ID or username available
+        return "`Unknown`"
+    except Exception as e:
+        print(f"Error in get_mention_by_id_or_username: {e}")
+        if username:
+            escaped_username = escape_discord_markdown(username)
+            return f"`{escaped_username}`"
+        return "`Unknown`"
+
+
 @bot.event
 async def on_ready():
     global db_pool, commands_synced
@@ -433,7 +492,7 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
         try:
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT id, player, host, text, created_at
+                    SELECT id, player, player_id, host, host_id, text, created_at
                     FROM reviews
                     WHERE player = $1
                     ORDER BY created_at DESC
@@ -494,8 +553,15 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
             else:
                 timestamp_str = created_at.strftime("%Y-%m-%d %H:%M:%S")
             
+            # Get host mention using ID if available, fallback to username
+            host_mention = await get_mention_by_id_or_username(
+                interaction,
+                user_id=review.get('host_id'),
+                username=review['host']
+            )
+            
             embed.add_field(
-                name=f"Review #{i} by {review['host']}",
+                name=f"Review #{i} by {host_mention}",
                 value=f"{review_text}\n*{timestamp_str}*",
                 inline=False
             )
@@ -629,7 +695,7 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
         try:
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT id, player, host, vouch_amount, vouch_type, created_at, edited_on
+                    SELECT id, player, player_id, host, host_id, vouch_amount, vouch_type, created_at, edited_on
                     FROM vouches
                     WHERE player = $1
                     ORDER BY vouch_type ASC, vouch_amount DESC
@@ -687,7 +753,11 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                     else:
                         formatted_date = created_at.strftime('%m/%d/%Y')
                 
-                host_mention = await get_host_mention(interaction, vouch['host'])
+                host_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=vouch.get('host_id'),
+                    username=vouch['host']
+                )
                 hard_text += f"{host_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
             if len(hard_text) > 1024:
                 hard_text = hard_text[:1020] + "..."
@@ -726,7 +796,11 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                     else:
                         formatted_date = created_at.strftime('%m/%d/%Y')
                 
-                host_mention = await get_host_mention(interaction, vouch['host'])
+                host_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=vouch.get('host_id'),
+                    username=vouch['host']
+                )
                 soft_text += f"{host_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
             if len(soft_text) > 1024:
                 soft_text = soft_text[:1020] + "..."
@@ -1054,7 +1128,7 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
         try:
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT id, player, host, debt_amount, created_at, edited_on
+                    SELECT id, player, player_id, host, host_id, debt_amount, created_at, edited_on
                     FROM debts
                     WHERE player = $1
                     ORDER BY debt_amount DESC
@@ -1075,14 +1149,18 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
         unique_hosts = {}
         for row in rows:
             host_username = row['host']
+            host_id = row.get('host_id')
             if host_username not in unique_hosts:
-                unique_hosts[host_username] = {'username': host_username}
+                unique_hosts[host_username] = {'username': host_username, 'host_id': host_id}
         
         host_mentions = []
-        # Try to mention hosts by username
+        # Try to mention hosts by ID (preferred) or username (fallback)
         for host_data in unique_hosts.values():
-            host_username = host_data['username']
-            host_mention = await get_host_mention(interaction, host_username)
+            host_mention = await get_mention_by_id_or_username(
+                interaction,
+                user_id=host_data.get('host_id'),
+                username=host_data['username']
+            )
             host_mentions.append(host_mention)
         
         # Create embed with debts
@@ -1121,7 +1199,11 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
                 else:
                     formatted_date = created_at.strftime('%m/%d/%Y')
             
-            host_mention = await get_host_mention(interaction, debt['host'])
+            host_mention = await get_mention_by_id_or_username(
+                interaction,
+                user_id=debt.get('host_id'),
+                username=debt['host']
+            )
             debts_text += f"{host_mention}: ${float(debt['debt_amount']):,.0f} on {formatted_date}\n"
         
         if len(debts_text) > 1024:
@@ -1156,44 +1238,51 @@ async def get_all_debt(interaction: discord.Interaction):
     Usage: /get_all_debt
     """
     try:
+        # Defer the response since this command may take a while
+        await interaction.response.defer()
+        
         if not db_pool:
-            await interaction.response.send_message("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
+            await interaction.followup.send("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
             return
 
         # Fetch all individual debt entries
         try:
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT player, host, debt_amount
+                    SELECT player, player_id, host, host_id, debt_amount
                     FROM debts
                     ORDER BY player, debt_amount DESC
                 """)
         except Exception as e:
             print(f"❌ Error fetching all debts: {e}")
-            await interaction.response.send_message("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
+            await interaction.followup.send("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
             return
 
         if not rows:
-            await interaction.response.send_message("📭 No debts found.", ephemeral=True)
+            await interaction.followup.send("📭 No debts found.", ephemeral=True)
             return
 
         # Group debts by player and calculate totals
         player_debts = {}
         for row in rows:
             player_name = row["player"]
+            player_id = row.get("player_id")
             host_name = row["host"]
+            host_id = row.get("host_id")
             debt_amount = float(row["debt_amount"])
             
             if player_name not in player_debts:
                 player_debts[player_name] = {
                     "total": 0,
                     "hosts": [],
-                    "unique_hosts": set()
+                    "unique_hosts": set(),
+                    "player_id": player_id
                 }
             
             player_debts[player_name]["total"] += debt_amount
             player_debts[player_name]["hosts"].append({
                 "host": host_name,
+                "host_id": host_id,
                 "amount": debt_amount
             })
             player_debts[player_name]["unique_hosts"].add(host_name)
@@ -1220,25 +1309,17 @@ async def get_all_debt(interaction: discord.Interaction):
             
             total_debt = debt_info["total"]
             
-            # Try to get player mention, fallback to escaped name
-            player_mention = await get_username_mention(interaction, player_name)
-            
-            # Debug: Log if we couldn't find the member
-            if player_mention.startswith('`') and player_mention.endswith('`'):
-                # Member not found - log for debugging
-                print(f"⚠️ Could not find member for player: {player_name}")
-            
-            # Safety check: if player_mention looks like a raw ID, use escaped username instead
-            if player_mention.startswith('<@') and player_mention.endswith('>') and len(player_mention) > 20 and '!' not in player_mention:
-                # This is a raw ID, use escaped username instead
-                escaped_player_name = escape_discord_markdown(player_name)
-                player_mention = f"`{escaped_player_name}`"
-                print(f"⚠️ Raw ID detected for player: {player_name}, using escaped username instead")
+            # Just use username in code format for players (no mentions, no escaping needed in code blocks)
+            player_mention = f"`{player_name}`"
             
             # Build the value text with individual debt entries
             value_text = ""
             for host_entry in debt_info["hosts"]:
-                host_mention = await get_host_mention(interaction, host_entry['host'])
+                host_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=host_entry.get('host_id'),
+                    username=host_entry['host']
+                )
                 value_text += f"${host_entry['amount']:,.0f} owed to {host_mention}\n"
             
             # Truncate if too long (Discord field value limit is 1024 characters)
@@ -1258,7 +1339,7 @@ async def get_all_debt(interaction: discord.Interaction):
         else:
             embed.set_footer(text="Ordered by debt amount (highest first)")
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     except Exception as e:
         print(f"Error in get_all_debt command: {e}")
