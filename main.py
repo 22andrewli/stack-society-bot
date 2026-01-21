@@ -128,23 +128,35 @@ async def get_username_mention(interaction: discord.Interaction, username: str) 
             except:
                 pass
         
-        # Try cache lookup first (most efficient)
+        # Remove any old discriminator format (username#1234) if present
+        clean_username = username.split('#')[0] if '#' in username else username
+        
+        # Try cache lookup first (most efficient) - try both with and without discriminator
         member = interaction.guild.get_member_named(username)
+        if not member:
+            member = interaction.guild.get_member_named(clean_username)
+        
         if member and isinstance(member, discord.Member):
             return member.mention
         
         # If not found, search through all cached members (case-insensitive)
-        username_lower = username.lower()
+        username_lower = clean_username.lower()
         for member in interaction.guild.members:
             if not isinstance(member, discord.Member):
                 continue
                 
             # Check name, display_name, and global_name, case-insensitive
+            # Also check if username matches any part of the member's identifiers
             member_name_match = member.name and member.name.lower() == username_lower
             display_name_match = member.display_name and member.display_name.lower() == username_lower
             global_name_match = member.global_name and member.global_name.lower() == username_lower
             
-            if member_name_match or display_name_match or global_name_match:
+            # Also try matching without underscores/dots (in case of formatting differences)
+            member_name_clean = member.name.lower().replace('_', '').replace('.', '') if member.name else ''
+            username_clean = username_lower.replace('_', '').replace('.', '')
+            clean_match = member_name_clean == username_clean
+            
+            if member_name_match or display_name_match or global_name_match or clean_match:
                 return member.mention
         
         # Not found in guild - return escaped username (not raw ID)
@@ -1211,11 +1223,17 @@ async def get_all_debt(interaction: discord.Interaction):
             # Try to get player mention, fallback to escaped name
             player_mention = await get_username_mention(interaction, player_name)
             
+            # Debug: Log if we couldn't find the member
+            if player_mention.startswith('`') and player_mention.endswith('`'):
+                # Member not found - log for debugging
+                print(f"⚠️ Could not find member for player: {player_name}")
+            
             # Safety check: if player_mention looks like a raw ID, use escaped username instead
-            if player_mention.startswith('<@') and player_mention.endswith('>') and len(player_mention) > 20:
+            if player_mention.startswith('<@') and player_mention.endswith('>') and len(player_mention) > 20 and '!' not in player_mention:
                 # This is a raw ID, use escaped username instead
                 escaped_player_name = escape_discord_markdown(player_name)
                 player_mention = f"`{escaped_player_name}`"
+                print(f"⚠️ Raw ID detected for player: {player_name}, using escaped username instead")
             
             # Build the value text with individual debt entries
             value_text = ""
