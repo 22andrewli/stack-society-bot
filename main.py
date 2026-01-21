@@ -243,10 +243,20 @@ async def review(interaction: discord.Interaction, user: discord.User, review_te
     Usage: /add_review @username "review text here"
     """
     try:
+        # Try to get a safe mention - use display_name if user not in guild
+        try:
+            # Check if user is in the guild
+            if interaction.guild and interaction.guild.get_member(user.id):
+                user_display = user.mention
+            else:
+                user_display = f"{user.display_name} ({user.name})"
+        except:
+            user_display = f"{user.display_name} ({user.name})"
+        
         # Create an embed for the review
         embed = discord.Embed(
             title="📝 New Review",
-            description=f"**Reviewed User:** {user.mention}\n**Reviewer:** {interaction.user.mention}\n\n**Review:**\n{review_text}",
+            description=f"**Reviewed User:** {user_display}\n**Reviewer:** {interaction.user.mention}\n\n**Review:**\n{review_text}",
             color=discord.Color.blue()
         )
         embed.set_thumbnail(url=user.display_avatar.url)
@@ -445,9 +455,20 @@ async def vouch(interaction: discord.Interaction, player: discord.User, amount: 
         
         # Create embed for the vouch
         title = "💵 Vouch Updated" if is_update else "💵 New Vouch"
+        
+        # Try to get a safe mention - use display_name if user not in guild
+        try:
+            # Check if player is in the guild
+            if interaction.guild and interaction.guild.get_member(player.id):
+                player_display = player.mention
+            else:
+                player_display = f"{player.display_name} ({player.name})"
+        except:
+            player_display = f"{player.display_name} ({player.name})"
+        
         embed = discord.Embed(
             title=title,
-            description=f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Amount:** ${amount:,.0f}\n**Type:** {vouch_type_value.upper()}",
+            description=f"**Player:** {player_display}\n**Host:** {interaction.user.mention}\n**Amount:** ${amount:,.0f}\n**Type:** {vouch_type_value.upper()}",
             color=discord.Color.green() if vouch_type_value == "hard" else discord.Color.orange()
         )
         embed.set_thumbnail(url=player.display_avatar.url)
@@ -730,14 +751,24 @@ async def debt(interaction: discord.Interaction, player: discord.User, amount: f
             return
         
         # Create embed for the debt
+        # Try to get a safe mention - use display_name if user not in guild
+        try:
+            # Check if player is in the guild
+            if interaction.guild and interaction.guild.get_member(player.id):
+                player_display = player.mention
+            else:
+                player_display = f"{player.display_name} ({player.name})"
+        except:
+            player_display = f"{player.display_name} ({player.name})"
+        
         if previous_amount is not None:
             # Debt was added to existing
             title = "💸 Debt Added"
-            description = f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Added:** ${amount:,.0f}\n**Previous Total:** ${previous_amount:,.0f}\n**New Total:** ${new_amount:,.0f}"
+            description = f"**Player:** {player_display}\n**Host:** {interaction.user.mention}\n**Added:** ${amount:,.0f}\n**Previous Total:** ${previous_amount:,.0f}\n**New Total:** ${new_amount:,.0f}"
         else:
             # New debt created
             title = "💸 New Debt"
-            description = f"**Player:** {player.mention}\n**Host:** {interaction.user.mention}\n**Debt Amount:** ${amount:,.0f}"
+            description = f"**Player:** {player_display}\n**Host:** {interaction.user.mention}\n**Debt Amount:** ${amount:,.0f}"
         
         embed = discord.Embed(
             title=title,
@@ -985,6 +1016,71 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
         
     except Exception as e:
         print(f"Error in get_debt command: {e}")
+        import traceback
+        traceback.print_exc()
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
+
+
+@bot.tree.command(name="get_all_debt", description="Get debt totals for all players (highest to lowest)")
+async def get_all_debt(interaction: discord.Interaction):
+    """
+    Slash command to retrieve debts for all players, sorted by highest total debt.
+    
+    Usage: /get_all_debt
+    """
+    try:
+        if not db_pool:
+            await interaction.response.send_message("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
+            return
+
+        # Fetch aggregated debts by player, highest total first
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT player, SUM(debt_amount) AS total_debt, COUNT(*) AS entry_count
+                    FROM debts
+                    GROUP BY player
+                    ORDER BY total_debt DESC
+                """)
+        except Exception as e:
+            print(f"❌ Error fetching all debts: {e}")
+            await interaction.response.send_message("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
+            return
+
+        if not rows:
+            await interaction.response.send_message("📭 No debts found.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="💸 All Debts",
+            description=f"Found **{len(rows)}** player(s) with debt (highest first)",
+            color=discord.Color.red()
+        )
+
+        # Limit to 25 fields (Discord embed limit)
+        rows_to_show = rows[:25]
+        for idx, row in enumerate(rows_to_show, 1):
+            player_name = row["player"]
+            total_debt = float(row["total_debt"])
+            entry_count = row["entry_count"]
+            embed.add_field(
+                name=f"{idx}. {player_name}",
+                value=f"${total_debt:,.0f} (entries: {entry_count})",
+                inline=False
+            )
+
+        if len(rows) > 25:
+            embed.set_footer(text=f"Showing top 25 of {len(rows)} players by debt (highest first)")
+        else:
+            embed.set_footer(text="Ordered by debt amount (highest first)")
+
+        await interaction.response.send_message(embed=embed)
+
+    except Exception as e:
+        print(f"Error in get_all_debt command: {e}")
         import traceback
         traceback.print_exc()
         if not interaction.response.is_done():
