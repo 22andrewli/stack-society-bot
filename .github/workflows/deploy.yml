@@ -16,8 +16,15 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
             cd ~/ss_bot
+            echo "📥 Pulling latest changes..."
             git pull origin main
+            echo "🔧 Activating virtual environment..."
             source venv/bin/activate
+            echo "📦 Installing dependencies..."
             pip install -r requirements.txt --quiet
+            echo "🔄 Restarting bot service..."
             sudo systemctl restart discord-bot
+            sleep 2
+            echo "📊 Checking service status..."
+            sudo systemctl status discord-bot --no-pager -l
             echo "✅ Deployment complete!"
