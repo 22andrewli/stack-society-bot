@@ -98,6 +98,41 @@ async def get_safe_user_display(interaction: discord.Interaction, user: discord.
         return f"{user.display_name} ({user.name})"
 
 
+async def get_host_mention(interaction: discord.Interaction, host_username: str) -> str:
+    """
+    Get a mention for a host by username. Tries to find the member in the guild.
+    
+    Args:
+        interaction: The Discord interaction object
+        host_username: The username of the host to mention
+        
+    Returns:
+        Member mention if found in guild, otherwise escaped username in code format
+    """
+    try:
+        if interaction.guild:
+            # Try cache lookup first (most efficient)
+            host_member = interaction.guild.get_member_named(host_username)
+            if host_member:
+                return host_member.mention
+            
+            # If not in cache, search through cached members
+            # This is more efficient than fetch_members() for large guilds
+            for member in interaction.guild.members:
+                if member.name == host_username or member.display_name == host_username:
+                    return member.mention
+            
+            # Not found - return escaped username
+            escaped_host = escape_discord_markdown(host_username)
+            return f"`{escaped_host}`"
+        else:
+            escaped_host = escape_discord_markdown(host_username)
+            return f"`{escaped_host}`"
+    except:
+        escaped_host = escape_discord_markdown(host_username)
+        return f"`{escaped_host}`"
+
+
 @bot.event
 async def on_ready():
     global db_pool, commands_synced
@@ -602,8 +637,8 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                     else:
                         formatted_date = created_at.strftime('%m/%d/%Y')
                 
-                escaped_host = escape_discord_markdown(vouch['host'])
-                hard_text += f"{escaped_host}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+                host_mention = await get_host_mention(interaction, vouch['host'])
+                hard_text += f"{host_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
             if len(hard_text) > 1024:
                 hard_text = hard_text[:1020] + "..."
             embed.add_field(
@@ -641,8 +676,8 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                     else:
                         formatted_date = created_at.strftime('%m/%d/%Y')
                 
-                escaped_host = escape_discord_markdown(vouch['host'])
-                soft_text += f"{escaped_host}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+                host_mention = await get_host_mention(interaction, vouch['host'])
+                soft_text += f"{host_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
             if len(soft_text) > 1024:
                 soft_text = soft_text[:1020] + "..."
             embed.add_field(
@@ -995,21 +1030,10 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
         
         host_mentions = []
         # Try to mention hosts by username
-        # Note: We only have usernames, not User objects, so we use get_member_named for cache lookup
-        # If not found in cache, we display the escaped username
         for host_data in unique_hosts.values():
             host_username = host_data['username']
-            if interaction.guild:
-                host_member = interaction.guild.get_member_named(host_username)
-                if host_member:
-                    host_mentions.append(host_member.mention)
-                else:
-                    # Not found in cache - use escaped username
-                    escaped_host = escape_discord_markdown(host_username)
-                    host_mentions.append(f"`{escaped_host}`")
-            else:
-                escaped_host = escape_discord_markdown(host_username)
-                host_mentions.append(f"`{escaped_host}`")
+            host_mention = await get_host_mention(interaction, host_username)
+            host_mentions.append(host_mention)
         
         # Create embed with debts
         hosts_text = ", ".join(host_mentions) if host_mentions else "Unknown hosts"
@@ -1047,8 +1071,8 @@ async def get_debt(interaction: discord.Interaction, player: discord.User):
                 else:
                     formatted_date = created_at.strftime('%m/%d/%Y')
             
-            escaped_host = escape_discord_markdown(debt['host'])
-            debts_text += f"{escaped_host}: ${float(debt['debt_amount']):,.0f} on {formatted_date}\n"
+            host_mention = await get_host_mention(interaction, debt['host'])
+            debts_text += f"{host_mention}: ${float(debt['debt_amount']):,.0f} on {formatted_date}\n"
         
         if len(debts_text) > 1024:
             debts_text = debts_text[:1020] + "..."
@@ -1152,8 +1176,8 @@ async def get_all_debt(interaction: discord.Interaction):
             # Build the value text with individual debt entries
             value_text = ""
             for host_entry in debt_info["hosts"]:
-                escaped_host_name = escape_discord_markdown(host_entry['host'])
-                value_text += f"${host_entry['amount']:,.0f} owed to {escaped_host_name}\n"
+                host_mention = await get_host_mention(interaction, host_entry['host'])
+                value_text += f"${host_entry['amount']:,.0f} owed to {host_mention}\n"
             
             # Truncate if too long (Discord field value limit is 1024 characters)
             if len(value_text) > 1020:
