@@ -16,6 +16,7 @@ load_dotenv()
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Enable members intent to properly resolve user mentions
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Database connection pool (will be initialized in on_ready)
@@ -71,7 +72,7 @@ def escape_discord_markdown(text: str) -> str:
 async def get_safe_user_display(interaction: discord.Interaction, user: discord.User) -> str:
     """
     Get a safe display format for a user that works even if they're not in the guild.
-    Uses fetch_member() to check guild membership via API (not just cache).
+    Uses get_member() with members intent enabled for reliable member lookup.
     
     Args:
         interaction: The Discord interaction object
@@ -81,20 +82,21 @@ async def get_safe_user_display(interaction: discord.Interaction, user: discord.
         User mention if in guild, otherwise "DisplayName (username)"
     """
     try:
-        if interaction.guild:
-            # Use fetch_member to force API lookup (not just cache)
-            try:
-                member = await interaction.guild.fetch_member(user.id)
-                return member.mention
-            except discord.NotFound:
-                # User is not in the guild
-                return f"{user.display_name} ({user.name})"
-            except Exception:
-                # Fallback on any other error
-                return f"{user.display_name} ({user.name})"
-        else:
+        if not interaction.guild:
+            # No guild context - use display format
             return f"{user.display_name} ({user.name})"
-    except:
+        
+        # Try to get member from guild (requires members intent)
+        member = interaction.guild.get_member(user.id)
+        if member:
+            return member.mention
+        
+        # Member not found - user might not be in guild or not cached
+        # Since they were passed as a parameter, try using their mention
+        # If they're not accessible, Discord will show raw ID, but that's better than nothing
+        return user.mention
+    except Exception:
+        # Fallback - use display format
         return f"{user.display_name} ({user.name})"
 
 
