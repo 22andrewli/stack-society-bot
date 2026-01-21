@@ -254,7 +254,7 @@ async def create_tables():
                 CREATE TABLE IF NOT EXISTS reviews (
                     id SERIAL PRIMARY KEY,
                     player TEXT NOT NULL,
-                    reviewer TEXT NOT NULL,
+                    host TEXT NOT NULL,
                     text TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -372,14 +372,14 @@ async def review(interaction: discord.Interaction, user: discord.User, review_te
     Usage: /add_review @username "review text here"
     """
     try:
-        # Get safe mention for user and reviewer
+        # Get safe mention for user and host
         user_display = await get_safe_user_display(interaction, user)
-        reviewer_display = await get_safe_user_display(interaction, interaction.user)
+        host_display = await get_safe_user_display(interaction, interaction.user)
         
         # Create an embed for the review
         embed = discord.Embed(
             title="📝 New Review",
-            description=f"**Reviewed User:** {user_display}\n**Reviewer:** {reviewer_display}\n\n**Review:**\n{review_text}",
+            description=f"**Reviewed User:** {user_display}\n**Host:** {host_display}\n\n**Review:**\n{review_text}",
             color=discord.Color.blue()
         )
         embed.set_thumbnail(url=user.display_avatar.url)
@@ -393,7 +393,7 @@ async def review(interaction: discord.Interaction, user: discord.User, review_te
             try:
                 async with db_pool.acquire() as conn:
                     await conn.execute("""
-                        INSERT INTO reviews (player, reviewer, text)
+                        INSERT INTO reviews (player, host, text)
                         VALUES ($1, $2, $3)
                     """, user.name, interaction.user.name, review_text)
                     print(f"✅ Saved review to database: {user.name} reviewed by {interaction.user.name}")
@@ -433,7 +433,7 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
         try:
             async with db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT id, player, reviewer, text, created_at
+                    SELECT id, player, host, text, created_at
                     FROM reviews
                     WHERE player = $1
                     ORDER BY created_at DESC
@@ -495,7 +495,7 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
                 timestamp_str = created_at.strftime("%Y-%m-%d %H:%M:%S")
             
             embed.add_field(
-                name=f"Review #{i} by {review['reviewer']}",
+                name=f"Review #{i} by {review['host']}",
                 value=f"{review_text}\n*{timestamp_str}*",
                 inline=False
             )
