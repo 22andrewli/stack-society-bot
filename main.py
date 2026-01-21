@@ -1113,15 +1113,12 @@ async def get_all_debt(interaction: discord.Interaction):
                 break
             
             total_debt = debt_info["total"]
-            host_count = len(debt_info["unique_hosts"])
             
             # Escape player name and host names to prevent Discord markdown formatting
             escaped_player_name = escape_discord_markdown(player_name)
             
-            # Build the value text
-            value_text = f"**${total_debt:,.0f} owed to {host_count} host{'s' if host_count > 1 else ''}**\n"
-            
-            # Add individual debt entries
+            # Build the value text with individual debt entries
+            value_text = ""
             for host_entry in debt_info["hosts"]:
                 escaped_host_name = escape_discord_markdown(host_entry['host'])
                 value_text += f"${host_entry['amount']:,.0f} owed to {escaped_host_name}\n"
@@ -1131,7 +1128,7 @@ async def get_all_debt(interaction: discord.Interaction):
                 value_text = value_text[:1017] + "..."
             
             embed.add_field(
-                name=f"{players_shown + 1}. {escaped_player_name}",
+                name=f"{players_shown + 1}. {escaped_player_name} - ${total_debt:,.0f}",
                 value=value_text,
                 inline=False
             )
