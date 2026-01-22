@@ -86,15 +86,23 @@ async def get_safe_user_display(interaction: discord.Interaction, user: discord.
             # No guild context - use display format
             return f"{user.display_name} ({user.name})"
         
-        # Try to get member from guild (requires members intent)
+        # Try to get member from guild cache first
         member = interaction.guild.get_member(user.id)
-        if member:
-            return member.mention
+        if member and isinstance(member, discord.Member):
+            mention = member.mention
+            # Check if mention is a raw ID (no !) - if so, fall back to display name
+            if mention.startswith('<@') and mention.endswith('>') and '!' not in mention and len(mention) > 20:
+                # Raw ID - use display format instead
+                return f"{user.display_name} ({user.name})"
+            return mention
         
-        # Member not found - user might not be in guild or not cached
-        # Since they were passed as a parameter, try using their mention
-        # If they're not accessible, Discord will show raw ID, but that's better than nothing
-        return user.mention
+        # Member not found in cache - try username lookup
+        username_mention = await get_username_mention(interaction, user.name)
+        if username_mention.startswith('<@') and username_mention.endswith('>') and '!' in username_mention:
+            return username_mention
+        
+        # Fallback - use display format
+        return f"{user.display_name} ({user.name})"
     except Exception:
         # Fallback - use display format
         return f"{user.display_name} ({user.name})"
