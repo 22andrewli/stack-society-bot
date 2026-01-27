@@ -365,6 +365,25 @@ async def create_tables():
                 ON vouches(vouch_type, vouch_amount DESC)
             """)
             
+            # Add player_id and host_id columns if they don't exist (for existing databases)
+            await conn.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='vouches' AND column_name='player_id'
+                    ) THEN
+                        ALTER TABLE vouches ADD COLUMN player_id BIGINT;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='vouches' AND column_name='host_id'
+                    ) THEN
+                        ALTER TABLE vouches ADD COLUMN host_id BIGINT;
+                    END IF;
+                END $$;
+            """)
+            
             # Create debts table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS debts (
@@ -824,6 +843,185 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
         
     except Exception as e:
         print(f"Error in get_vouch command: {e}")
+        import traceback
+        traceback.print_exc()
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while fetching vouches. Please try again.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ An error occurred while fetching vouches. Please try again.", ephemeral=True)
+
+
+@bot.tree.command(name="get_my_vouches", description="Get all vouches you have given")
+async def get_my_vouches(interaction: discord.Interaction):
+    """
+    Slash command to retrieve all vouches given by the command runner.
+    
+    Usage: /get_my_vouches
+    """
+    # Defer immediately - this must happen first to avoid timeout
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer()
+        except Exception as defer_error:
+            print(f"❌ Error deferring response: {defer_error}")
+            # If defer fails, try to send error response
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass
+            return
+    
+    try:
+        host_username = interaction.user.name
+        host_id = interaction.user.id
+        
+        if not db_pool:
+            await interaction.followup.send("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
+            return
+        
+        # Fetch vouches from database where the command runner is the host
+        try:
+            async with db_pool.acquire() as conn:
+                # Try to fetch with player_id and host_id, but handle case where columns might not exist
+                try:
+                    rows = await conn.fetch("""
+                        SELECT id, player, player_id, host, host_id, vouch_amount, vouch_type, created_at, edited_on
+                        FROM vouches
+                        WHERE host = $1
+                        ORDER BY vouch_type ASC, vouch_amount DESC
+                    """, host_username)
+                except Exception as col_error:
+                    # If columns don't exist, try without them
+                    error_str = str(col_error).lower()
+                    if 'player_id' in error_str or 'host_id' in error_str or 'column' in error_str or 'does not exist' in error_str:
+                        print(f"⚠️ player_id/host_id columns not found, fetching without them: {col_error}")
+                        rows = await conn.fetch("""
+                            SELECT id, player, host, vouch_amount, vouch_type, created_at, edited_on
+                            FROM vouches
+                            WHERE host = $1
+                            ORDER BY vouch_type ASC, vouch_amount DESC
+                        """, host_username)
+                    else:
+                        raise
+        except Exception as e:
+            print(f"❌ Error fetching vouches for host {host_username}: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send("❌ An error occurred while fetching vouches. Please try again.", ephemeral=True)
+            return
+        
+        # Get safe mention for the host (command runner)
+        host_display = await get_safe_user_display(interaction, interaction.user)
+        
+        if not rows:
+            await interaction.followup.send(f"📭 You haven't vouched for anyone yet.", ephemeral=True)
+            return
+        
+        # Create embed with vouches
+        embed = discord.Embed(
+            title=f"💵 Your Vouches",
+            description=f"Found **{len(rows)}** vouch(es) given by {host_display}",
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        
+        # Group vouches by type
+        hard_vouches = [row for row in rows if row['vouch_type'] == 'hard']
+        soft_vouches = [row for row in rows if row['vouch_type'] == 'soft']
+        
+        # Add hard vouches first
+        if hard_vouches:
+            hard_text = ""
+            for vouch in hard_vouches:
+                # Use edited_on if available, otherwise use created_at
+                date_to_format = vouch.get('edited_on') or vouch['created_at']
+                
+                # Format date to mm/dd/yyyy
+                if isinstance(date_to_format, str):
+                    # If it's a string, try to parse it
+                    try:
+                        date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
+                        formatted_date = date_obj.strftime('%m/%d/%Y')
+                    except:
+                        formatted_date = date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
+                elif date_to_format:
+                    formatted_date = date_to_format.strftime('%m/%d/%Y')
+                else:
+                    # Fallback to created_at if edited_on is None
+                    created_at = vouch['created_at']
+                    if isinstance(created_at, str):
+                        try:
+                            date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            formatted_date = date_obj.strftime('%m/%d/%Y')
+                        except:
+                            formatted_date = created_at[:10] if len(created_at) >= 10 else created_at
+                    else:
+                        formatted_date = created_at.strftime('%m/%d/%Y')
+                
+                player_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=vouch.get('player_id'),
+                    username=vouch['player']
+                )
+                hard_text += f"{player_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+            if len(hard_text) > 1024:
+                hard_text = hard_text[:1020] + "..."
+            embed.add_field(
+                name=f"🟢 Hard Vouches ({len(hard_vouches)})",
+                value=hard_text or "None",
+                inline=False
+            )
+        
+        # Add soft vouches
+        if soft_vouches:
+            soft_text = ""
+            for vouch in soft_vouches:
+                # Use edited_on if available, otherwise use created_at
+                date_to_format = vouch.get('edited_on') or vouch['created_at']
+                
+                # Format date to mm/dd/yyyy
+                if isinstance(date_to_format, str):
+                    # If it's a string, try to parse it
+                    try:
+                        date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
+                        formatted_date = date_obj.strftime('%m/%d/%Y')
+                    except:
+                        formatted_date = date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
+                elif date_to_format:
+                    formatted_date = date_to_format.strftime('%m/%d/%Y')
+                else:
+                    # Fallback to created_at if edited_on is None
+                    created_at = vouch['created_at']
+                    if isinstance(created_at, str):
+                        try:
+                            date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            formatted_date = date_obj.strftime('%m/%d/%Y')
+                        except:
+                            formatted_date = created_at[:10] if len(created_at) >= 10 else created_at
+                    else:
+                        formatted_date = created_at.strftime('%m/%d/%Y')
+                
+                player_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=vouch.get('player_id'),
+                    username=vouch['player']
+                )
+                soft_text += f"{player_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+            if len(soft_text) > 1024:
+                soft_text = soft_text[:1020] + "..."
+            embed.add_field(
+                name=f"🟡 Soft Vouches ({len(soft_vouches)})",
+                value=soft_text or "None",
+                inline=False
+            )
+        
+        embed.set_footer(text="Ordered by type (hard first), then by vouch amount (highest first)")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Error in get_my_vouches command: {e}")
         import traceback
         traceback.print_exc()
         if not interaction.response.is_done():
