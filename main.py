@@ -310,128 +310,66 @@ async def on_ready():
 
 
 async def create_tables():
-    """Create database tables if they don't exist"""
+    """Create database tables if they don't exist. Assumes current DB schema is correct."""
     if not db_pool:
         return
     
     try:
         async with db_pool.acquire() as conn:
-            # Create reviews table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS reviews (
                     id SERIAL PRIMARY KEY,
                     player TEXT NOT NULL,
+                    player_id BIGINT,
                     host TEXT NOT NULL,
+                    host_id BIGINT,
                     text TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Create vouches table
-            await conn.execute("""
+                );
+
                 CREATE TABLE IF NOT EXISTS vouches (
                     id SERIAL PRIMARY KEY,
                     player TEXT NOT NULL,
+                    player_id BIGINT,
                     host TEXT NOT NULL,
+                    host_id BIGINT,
                     vouch_amount NUMERIC NOT NULL,
-                    vouch_type TEXT NOT NULL CHECK (vouch_type IN ('hard', 'soft')),
+                    vouch_type TEXT NOT NULL CHECK (vouch_type IN ('hard', 'soft', 'ledger')),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     edited_on TIMESTAMP,
                     UNIQUE(player, host)
-                )
-            """)
-            
-            # Add unique constraint if it doesn't exist (for existing databases)
-            await conn.execute("""
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_constraint 
-                        WHERE conname = 'vouches_player_host_key'
-                    ) THEN
-                        ALTER TABLE vouches ADD CONSTRAINT vouches_player_host_key UNIQUE (player, host);
-                    END IF;
-                END $$;
-            """)
-            
-            # Create indexes for vouches
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_vouches_player 
-                ON vouches(player)
-            """)
-            
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_vouches_type_amount 
-                ON vouches(vouch_type, vouch_amount DESC)
-            """)
-            
-            # Add player_id and host_id columns if they don't exist (for existing databases)
-            await conn.execute("""
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name='vouches' AND column_name='player_id'
-                    ) THEN
-                        ALTER TABLE vouches ADD COLUMN player_id BIGINT;
-                    END IF;
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name='vouches' AND column_name='host_id'
-                    ) THEN
-                        ALTER TABLE vouches ADD COLUMN host_id BIGINT;
-                    END IF;
-                END $$;
-            """)
-            
-            # Create debts table
-            await conn.execute("""
+                );
+
                 CREATE TABLE IF NOT EXISTS debts (
                     id SERIAL PRIMARY KEY,
                     player TEXT NOT NULL,
+                    player_id BIGINT,
                     host TEXT NOT NULL,
+                    host_id BIGINT,
                     debt_amount NUMERIC NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     edited_on TIMESTAMP,
                     UNIQUE(player, host)
-                )
-            """)
-            
-            # Add unique constraint if it doesn't exist (for existing databases)
-            await conn.execute("""
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_constraint 
-                        WHERE conname = 'debts_player_host_key'
-                    ) THEN
-                        ALTER TABLE debts ADD CONSTRAINT debts_player_host_key UNIQUE (player, host);
-                    END IF;
-                END $$;
-            """)
-            
-            # Add edited_on column if it doesn't exist (for existing databases)
-            await conn.execute("""
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name='debts' AND column_name='edited_on'
-                    ) THEN
-                        ALTER TABLE debts ADD COLUMN edited_on TIMESTAMP;
-                    END IF;
-                END $$;
-            """)
-            
-            # Create indexes for debts
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_debts_player 
-                ON debts(player)
-            """)
-            
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_debts_amount 
-                ON debts(debt_amount DESC)
+                );
+
+                CREATE TABLE IF NOT EXISTS nominations (
+                    id SERIAL PRIMARY KEY,
+                    player TEXT NOT NULL,
+                    player_id BIGINT,
+                    host TEXT NOT NULL,
+                    host_id BIGINT,
+                    tip NUMERIC NOT NULL,
+                    profit NUMERIC NOT NULL,
+                    nomination_type TEXT NOT NULL CHECK (nomination_type IN ('huge', 'VIP')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vouches_player ON vouches(player);
+                CREATE INDEX IF NOT EXISTS idx_vouches_type_amount ON vouches(vouch_type, vouch_amount DESC);
+                CREATE INDEX IF NOT EXISTS idx_debts_player ON debts(player);
+                CREATE INDEX IF NOT EXISTS idx_debts_amount ON debts(debt_amount DESC);
+                CREATE INDEX IF NOT EXISTS idx_nominations_player ON nominations(player);
+                CREATE INDEX IF NOT EXISTS idx_nominations_host ON nominations(host);
             """)
             
             print("✅ Database tables created/verified")
@@ -610,15 +548,16 @@ async def get_reviews(interaction: discord.Interaction, user: discord.User):
             await interaction.followup.send("❌ An error occurred while fetching reviews. Please try again.", ephemeral=True)
 
 
-@bot.tree.command(name="add_vouch", description="Vouch for a player with an amount (hard or soft)")
+@bot.tree.command(name="add_vouch", description="Vouch for a player with an amount (hard, soft, or ledger)")
 @app_commands.describe(
     player="The Discord user to vouch for",
     amount="The amount to vouch for (e.g., 100)",
-    vouch_type="Type of vouch: hard or soft"
+    vouch_type="Type of vouch: hard, soft, or ledger"
 )
 @app_commands.choices(vouch_type=[
     app_commands.Choice(name="hard", value="hard"),
-    app_commands.Choice(name="soft", value="soft")
+    app_commands.Choice(name="soft", value="soft"),
+    app_commands.Choice(name="ledger", value="ledger")
 ])
 async def vouch(interaction: discord.Interaction, player: discord.User, amount: int, vouch_type: app_commands.Choice[str]):
     """
@@ -682,7 +621,7 @@ async def vouch(interaction: discord.Interaction, player: discord.User, amount: 
         embed = discord.Embed(
             title=title,
             description=f"**Player:** {player_display}\n**Host:** {host_display}\n**Amount:** ${amount:,.0f}\n**Type:** {vouch_type_value.upper()}",
-            color=discord.Color.green() if vouch_type_value == "hard" else discord.Color.orange()
+            color=discord.Color.green() if vouch_type_value == "hard" else discord.Color.blue() if vouch_type_value == "ledger" else discord.Color.orange()
         )
         embed.set_thumbnail(url=player.display_avatar.url)
         embed.set_footer(text=f"Vouch {'updated' if is_update else 'submitted'} by {interaction.user.display_name}")
@@ -750,36 +689,35 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
         # Group vouches by type
         hard_vouches = [row for row in rows if row['vouch_type'] == 'hard']
         soft_vouches = [row for row in rows if row['vouch_type'] == 'soft']
+        ledger_vouches = [row for row in rows if row['vouch_type'] == 'ledger']
+        
+        # Helper to format vouch date
+        def format_vouch_date(vouch_row):
+            date_to_format = vouch_row.get('edited_on') or vouch_row['created_at']
+            if isinstance(date_to_format, str):
+                try:
+                    date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
+                    return date_obj.strftime('%m/%d/%Y')
+                except:
+                    return date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
+            elif date_to_format:
+                return date_to_format.strftime('%m/%d/%Y')
+            else:
+                created_at = vouch_row['created_at']
+                if isinstance(created_at, str):
+                    try:
+                        date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        return date_obj.strftime('%m/%d/%Y')
+                    except:
+                        return created_at[:10] if len(created_at) >= 10 else created_at
+                else:
+                    return created_at.strftime('%m/%d/%Y')
         
         # Add hard vouches first
         if hard_vouches:
             hard_text = ""
             for vouch in hard_vouches:
-                # Use edited_on if available, otherwise use created_at
-                date_to_format = vouch.get('edited_on') or vouch['created_at']
-                
-                # Format date to mm/dd/yyyy
-                if isinstance(date_to_format, str):
-                    # If it's a string, try to parse it
-                    try:
-                        date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
-                        formatted_date = date_obj.strftime('%m/%d/%Y')
-                    except:
-                        formatted_date = date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
-                elif date_to_format:
-                    formatted_date = date_to_format.strftime('%m/%d/%Y')
-                else:
-                    # Fallback to created_at if edited_on is None
-                    created_at = vouch['created_at']
-                    if isinstance(created_at, str):
-                        try:
-                            date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            formatted_date = date_obj.strftime('%m/%d/%Y')
-                        except:
-                            formatted_date = created_at[:10] if len(created_at) >= 10 else created_at
-                    else:
-                        formatted_date = created_at.strftime('%m/%d/%Y')
-                
+                formatted_date = format_vouch_date(vouch)
                 host_mention = await get_mention_by_id_or_username(
                     interaction,
                     user_id=vouch.get('host_id'),
@@ -798,31 +736,7 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
         if soft_vouches:
             soft_text = ""
             for vouch in soft_vouches:
-                # Use edited_on if available, otherwise use created_at
-                date_to_format = vouch.get('edited_on') or vouch['created_at']
-                
-                # Format date to mm/dd/yyyy
-                if isinstance(date_to_format, str):
-                    # If it's a string, try to parse it
-                    try:
-                        date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
-                        formatted_date = date_obj.strftime('%m/%d/%Y')
-                    except:
-                        formatted_date = date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
-                elif date_to_format:
-                    formatted_date = date_to_format.strftime('%m/%d/%Y')
-                else:
-                    # Fallback to created_at if edited_on is None
-                    created_at = vouch['created_at']
-                    if isinstance(created_at, str):
-                        try:
-                            date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            formatted_date = date_obj.strftime('%m/%d/%Y')
-                        except:
-                            formatted_date = created_at[:10] if len(created_at) >= 10 else created_at
-                    else:
-                        formatted_date = created_at.strftime('%m/%d/%Y')
-                
+                formatted_date = format_vouch_date(vouch)
                 host_mention = await get_mention_by_id_or_username(
                     interaction,
                     user_id=vouch.get('host_id'),
@@ -837,7 +751,26 @@ async def get_vouch(interaction: discord.Interaction, player: discord.User):
                 inline=False
             )
         
-        embed.set_footer(text="Ordered by type (hard first), then by vouch amount (highest first)")
+        # Add ledger vouches
+        if ledger_vouches:
+            ledger_text = ""
+            for vouch in ledger_vouches:
+                formatted_date = format_vouch_date(vouch)
+                host_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=vouch.get('host_id'),
+                    username=vouch['host']
+                )
+                ledger_text += f"{host_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+            if len(ledger_text) > 1024:
+                ledger_text = ledger_text[:1020] + "..."
+            embed.add_field(
+                name=f"🔵 Ledger Vouches ({len(ledger_vouches)})",
+                value=ledger_text or "None",
+                inline=False
+            )
+        
+        embed.set_footer(text="Ordered by type (hard, soft, ledger), then by vouch amount (highest first)")
         
         await interaction.response.send_message(embed=embed)
         
@@ -929,36 +862,35 @@ async def get_my_vouches(interaction: discord.Interaction):
         # Group vouches by type
         hard_vouches = [row for row in rows if row['vouch_type'] == 'hard']
         soft_vouches = [row for row in rows if row['vouch_type'] == 'soft']
+        ledger_vouches = [row for row in rows if row['vouch_type'] == 'ledger']
+        
+        # Helper to format vouch date
+        def format_vouch_date(vouch_row):
+            date_to_format = vouch_row.get('edited_on') or vouch_row['created_at']
+            if isinstance(date_to_format, str):
+                try:
+                    date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
+                    return date_obj.strftime('%m/%d/%Y')
+                except:
+                    return date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
+            elif date_to_format:
+                return date_to_format.strftime('%m/%d/%Y')
+            else:
+                created_at = vouch_row['created_at']
+                if isinstance(created_at, str):
+                    try:
+                        date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        return date_obj.strftime('%m/%d/%Y')
+                    except:
+                        return created_at[:10] if len(created_at) >= 10 else created_at
+                else:
+                    return created_at.strftime('%m/%d/%Y')
         
         # Add hard vouches first
         if hard_vouches:
             hard_text = ""
             for vouch in hard_vouches:
-                # Use edited_on if available, otherwise use created_at
-                date_to_format = vouch.get('edited_on') or vouch['created_at']
-                
-                # Format date to mm/dd/yyyy
-                if isinstance(date_to_format, str):
-                    # If it's a string, try to parse it
-                    try:
-                        date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
-                        formatted_date = date_obj.strftime('%m/%d/%Y')
-                    except:
-                        formatted_date = date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
-                elif date_to_format:
-                    formatted_date = date_to_format.strftime('%m/%d/%Y')
-                else:
-                    # Fallback to created_at if edited_on is None
-                    created_at = vouch['created_at']
-                    if isinstance(created_at, str):
-                        try:
-                            date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            formatted_date = date_obj.strftime('%m/%d/%Y')
-                        except:
-                            formatted_date = created_at[:10] if len(created_at) >= 10 else created_at
-                    else:
-                        formatted_date = created_at.strftime('%m/%d/%Y')
-                
+                formatted_date = format_vouch_date(vouch)
                 player_mention = await get_mention_by_id_or_username(
                     interaction,
                     user_id=vouch.get('player_id'),
@@ -977,31 +909,7 @@ async def get_my_vouches(interaction: discord.Interaction):
         if soft_vouches:
             soft_text = ""
             for vouch in soft_vouches:
-                # Use edited_on if available, otherwise use created_at
-                date_to_format = vouch.get('edited_on') or vouch['created_at']
-                
-                # Format date to mm/dd/yyyy
-                if isinstance(date_to_format, str):
-                    # If it's a string, try to parse it
-                    try:
-                        date_obj = datetime.fromisoformat(date_to_format.replace('Z', '+00:00'))
-                        formatted_date = date_obj.strftime('%m/%d/%Y')
-                    except:
-                        formatted_date = date_to_format[:10] if len(date_to_format) >= 10 else date_to_format
-                elif date_to_format:
-                    formatted_date = date_to_format.strftime('%m/%d/%Y')
-                else:
-                    # Fallback to created_at if edited_on is None
-                    created_at = vouch['created_at']
-                    if isinstance(created_at, str):
-                        try:
-                            date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            formatted_date = date_obj.strftime('%m/%d/%Y')
-                        except:
-                            formatted_date = created_at[:10] if len(created_at) >= 10 else created_at
-                    else:
-                        formatted_date = created_at.strftime('%m/%d/%Y')
-                
+                formatted_date = format_vouch_date(vouch)
                 player_mention = await get_mention_by_id_or_username(
                     interaction,
                     user_id=vouch.get('player_id'),
@@ -1016,7 +924,26 @@ async def get_my_vouches(interaction: discord.Interaction):
                 inline=False
             )
         
-        embed.set_footer(text="Ordered by type (hard first), then by vouch amount (highest first)")
+        # Add ledger vouches
+        if ledger_vouches:
+            ledger_text = ""
+            for vouch in ledger_vouches:
+                formatted_date = format_vouch_date(vouch)
+                player_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=vouch.get('player_id'),
+                    username=vouch['player']
+                )
+                ledger_text += f"{player_mention}: ${int(vouch['vouch_amount'])} on {formatted_date}\n"
+            if len(ledger_text) > 1024:
+                ledger_text = ledger_text[:1020] + "..."
+            embed.add_field(
+                name=f"🔵 Ledger Vouches ({len(ledger_vouches)})",
+                value=ledger_text or "None",
+                inline=False
+            )
+        
+        embed.set_footer(text="Ordered by type (hard, soft, ledger), then by vouch amount (highest first)")
         
         await interaction.followup.send(embed=embed)
         
@@ -1555,6 +1482,332 @@ async def get_all_debt(interaction: discord.Interaction):
             await interaction.response.send_message("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
         else:
             await interaction.followup.send("❌ An error occurred while fetching debts. Please try again.", ephemeral=True)
+
+
+@bot.tree.command(name="add_nomination", description="Nominate a player for Huge Tipper or VIP Tipper role")
+@app_commands.describe(
+    player="The Discord user to nominate",
+    tip="The tip amount (e.g., 50)",
+    profit="The profit/winnings amount (e.g., 1000)",
+    nomination_type="Type of nomination: huge (5%+) or VIP (7%+)"
+)
+@app_commands.choices(nomination_type=[
+    app_commands.Choice(name="huge", value="huge"),
+    app_commands.Choice(name="VIP", value="VIP")
+])
+async def add_nomination(interaction: discord.Interaction, player: discord.User, tip: float, profit: float, nomination_type: app_commands.Choice[str]):
+    """
+    Slash command to nominate a player for a tipper role.
+    
+    Usage: /add_nomination player:@username tip:50 profit:1000 nomination_type:huge
+    """
+    try:
+        if not db_pool:
+            await interaction.response.send_message("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
+            return
+        
+        nomination_type_value = nomination_type.value
+        
+        # Validate amounts
+        if tip <= 0:
+            await interaction.response.send_message("❌ Tip amount must be greater than 0.", ephemeral=True)
+            return
+        if profit <= 0:
+            await interaction.response.send_message("❌ Profit amount must be greater than 0.", ephemeral=True)
+            return
+        
+        # Calculate tip percentage
+        tip_pct = (tip / profit) * 100
+        
+        # Insert nomination into database
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO nominations (player, player_id, host, host_id, tip, profit, nomination_type)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """, player.name, player.id, interaction.user.name, interaction.user.id, tip, profit, nomination_type_value)
+                print(f"✅ Saved nomination: {player.name} ({player.id}) nominated by {interaction.user.name} ({interaction.user.id}) - tip ${tip}, profit ${profit} ({nomination_type_value})")
+        except Exception as e:
+            print(f"❌ Error saving nomination to database: {e}")
+            await interaction.response.send_message("❌ An error occurred while saving the nomination. Please try again.", ephemeral=True)
+            return
+        
+        # Create embed
+        title = "🏆 New Nomination"
+        player_display = await get_safe_user_display(interaction, player)
+        host_display = await get_safe_user_display(interaction, interaction.user)
+        
+        role_label = "Huge Tipper" if nomination_type_value == "huge" else "VIP Tipper"
+        
+        embed = discord.Embed(
+            title=title,
+            description=(
+                f"**Player:** {player_display}\n"
+                f"**Host:** {host_display}\n"
+                f"**Tip:** ${tip:,.0f}\n"
+                f"**Profit:** ${profit:,.0f}\n"
+                f"**Tip %:** {tip_pct:.1f}%\n"
+                f"**Nominated For:** {role_label}"
+            ),
+            color=discord.Color.purple() if nomination_type_value == "VIP" else discord.Color.gold()
+        )
+        embed.set_thumbnail(url=player.display_avatar.url)
+        embed.set_footer(text=f"Nomination submitted by {interaction.user.display_name}")
+        embed.timestamp = discord.utils.utcnow()
+        
+        await interaction.response.send_message(embed=embed)
+        
+    except Exception as e:
+        print(f"Error in add_nomination command: {e}")
+        import traceback
+        traceback.print_exc()
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while processing your nomination. Please try again.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ An error occurred while processing your nomination. Please try again.", ephemeral=True)
+
+
+@bot.tree.command(name="get_nomination", description="Get all nominations for a player")
+@app_commands.describe(
+    player="The Discord user to get nominations for"
+)
+async def get_nomination(interaction: discord.Interaction, player: discord.User):
+    """
+    Slash command to retrieve all nominations for a player.
+    
+    Usage: /get_nomination player:@username
+    """
+    try:
+        await interaction.response.defer()
+        
+        target_user = player
+        player_username = target_user.name
+        
+        if not db_pool:
+            await interaction.followup.send("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
+            return
+        
+        # Fetch nominations from database
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, player, player_id, host, host_id, tip, profit, nomination_type, created_at
+                    FROM nominations
+                    WHERE player = $1
+                    ORDER BY nomination_type ASC, tip DESC
+                """, player_username)
+        except Exception as e:
+            print(f"❌ Error fetching nominations for {player_username}: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching nominations. Please try again.", ephemeral=True)
+            return
+        
+        user_display = await get_safe_user_display(interaction, target_user)
+        
+        if not rows:
+            await interaction.followup.send(f"📭 No nominations found for {user_display}.", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title=f"🏆 Nominations for {target_user.display_name}",
+            description=f"Found **{len(rows)}** nomination(s) for {user_display}",
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url=target_user.display_avatar.url)
+        
+        # Group by type
+        huge_noms = [row for row in rows if row['nomination_type'] == 'huge']
+        vip_noms = [row for row in rows if row['nomination_type'] == 'VIP']
+        
+        # Helper to format nomination date
+        def format_nom_date(nom_row):
+            created_at = nom_row['created_at']
+            if isinstance(created_at, str):
+                try:
+                    date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    return date_obj.strftime('%m/%d/%Y')
+                except:
+                    return created_at[:10] if len(created_at) >= 10 else created_at
+            elif created_at:
+                return created_at.strftime('%m/%d/%Y')
+            else:
+                return "Unknown"
+        
+        # Huge Tipper nominations
+        if huge_noms:
+            huge_text = ""
+            for nom in huge_noms:
+                formatted_date = format_nom_date(nom)
+                tip_pct = (float(nom['tip']) / float(nom['profit'])) * 100 if float(nom['profit']) > 0 else 0
+                host_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=nom.get('host_id'),
+                    username=nom['host']
+                )
+                huge_text += f"{host_mention}: ${float(nom['tip']):,.0f} / ${float(nom['profit']):,.0f} ({tip_pct:.1f}%) on {formatted_date}\n"
+            if len(huge_text) > 1024:
+                huge_text = huge_text[:1020] + "..."
+            embed.add_field(
+                name=f"💰 Huge Tipper ({len(huge_noms)})",
+                value=huge_text or "None",
+                inline=False
+            )
+        
+        # VIP Tipper nominations
+        if vip_noms:
+            vip_text = ""
+            for nom in vip_noms:
+                formatted_date = format_nom_date(nom)
+                tip_pct = (float(nom['tip']) / float(nom['profit'])) * 100 if float(nom['profit']) > 0 else 0
+                host_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=nom.get('host_id'),
+                    username=nom['host']
+                )
+                vip_text += f"{host_mention}: ${float(nom['tip']):,.0f} / ${float(nom['profit']):,.0f} ({tip_pct:.1f}%) on {formatted_date}\n"
+            if len(vip_text) > 1024:
+                vip_text = vip_text[:1020] + "..."
+            embed.add_field(
+                name=f"👑 VIP Tipper ({len(vip_noms)})",
+                value=vip_text or "None",
+                inline=False
+            )
+        
+        embed.set_footer(text="Format: host: $tip / $profit (tip%) on date")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Error in get_nomination command: {e}")
+        import traceback
+        traceback.print_exc()
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while fetching nominations. Please try again.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ An error occurred while fetching nominations. Please try again.", ephemeral=True)
+
+
+@bot.tree.command(name="get_my_nominations", description="Get all nominations you have given")
+async def get_my_nominations(interaction: discord.Interaction):
+    """
+    Slash command to retrieve all nominations given by the command runner.
+    
+    Usage: /get_my_nominations
+    """
+    try:
+        await interaction.response.defer()
+    except Exception as defer_error:
+        print(f"❌ Error deferring response: {defer_error}")
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ An error occurred. Please try again.", ephemeral=True)
+        except:
+            pass
+        return
+    
+    try:
+        host_username = interaction.user.name
+        
+        if not db_pool:
+            await interaction.followup.send("❌ Database is not connected. Please contact the bot administrator.", ephemeral=True)
+            return
+        
+        # Fetch nominations where the command runner is the host
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, player, player_id, host, host_id, tip, profit, nomination_type, created_at
+                    FROM nominations
+                    WHERE host = $1
+                    ORDER BY nomination_type ASC, tip DESC
+                """, host_username)
+        except Exception as e:
+            print(f"❌ Error fetching nominations for host {host_username}: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching nominations. Please try again.", ephemeral=True)
+            return
+        
+        host_display = await get_safe_user_display(interaction, interaction.user)
+        
+        if not rows:
+            await interaction.followup.send("📭 You haven't nominated anyone yet.", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="🏆 Your Nominations",
+            description=f"Found **{len(rows)}** nomination(s) given by {host_display}",
+            color=discord.Color.gold()
+        )
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        
+        # Group by type
+        huge_noms = [row for row in rows if row['nomination_type'] == 'huge']
+        vip_noms = [row for row in rows if row['nomination_type'] == 'VIP']
+        
+        # Helper to format nomination date
+        def format_nom_date(nom_row):
+            created_at = nom_row['created_at']
+            if isinstance(created_at, str):
+                try:
+                    date_obj = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    return date_obj.strftime('%m/%d/%Y')
+                except:
+                    return created_at[:10] if len(created_at) >= 10 else created_at
+            elif created_at:
+                return created_at.strftime('%m/%d/%Y')
+            else:
+                return "Unknown"
+        
+        # Huge Tipper nominations
+        if huge_noms:
+            huge_text = ""
+            for nom in huge_noms:
+                formatted_date = format_nom_date(nom)
+                tip_pct = (float(nom['tip']) / float(nom['profit'])) * 100 if float(nom['profit']) > 0 else 0
+                player_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=nom.get('player_id'),
+                    username=nom['player']
+                )
+                huge_text += f"{player_mention}: ${float(nom['tip']):,.0f} / ${float(nom['profit']):,.0f} ({tip_pct:.1f}%) on {formatted_date}\n"
+            if len(huge_text) > 1024:
+                huge_text = huge_text[:1020] + "..."
+            embed.add_field(
+                name=f"💰 Huge Tipper ({len(huge_noms)})",
+                value=huge_text or "None",
+                inline=False
+            )
+        
+        # VIP Tipper nominations
+        if vip_noms:
+            vip_text = ""
+            for nom in vip_noms:
+                formatted_date = format_nom_date(nom)
+                tip_pct = (float(nom['tip']) / float(nom['profit'])) * 100 if float(nom['profit']) > 0 else 0
+                player_mention = await get_mention_by_id_or_username(
+                    interaction,
+                    user_id=nom.get('player_id'),
+                    username=nom['player']
+                )
+                vip_text += f"{player_mention}: ${float(nom['tip']):,.0f} / ${float(nom['profit']):,.0f} ({tip_pct:.1f}%) on {formatted_date}\n"
+            if len(vip_text) > 1024:
+                vip_text = vip_text[:1020] + "..."
+            embed.add_field(
+                name=f"👑 VIP Tipper ({len(vip_noms)})",
+                value=vip_text or "None",
+                inline=False
+            )
+        
+        embed.set_footer(text="Format: player: $tip / $profit (tip%) on date")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"Error in get_my_nominations command: {e}")
+        import traceback
+        traceback.print_exc()
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while fetching nominations. Please try again.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ An error occurred while fetching nominations. Please try again.", ephemeral=True)
 
 
 # Run the bot with retry logic for rate limiting
